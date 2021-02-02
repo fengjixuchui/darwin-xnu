@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2000-2017 Apple Inc. All rights reserved.
+ * Copyright (c) 2000-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
@@ -11,10 +11,10 @@
  * unlawful or unlicensed copies of an Apple operating system, or to
  * circumvent, violate, or enable the circumvention or violation of, any
  * terms of an Apple operating system software license agreement.
- * 
+ *
  * Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -22,7 +22,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
@@ -91,6 +91,17 @@
  * Define it to get a correct behavior on per-interface statistics.
  */
 #define IN6_IFSTAT_STRICT
+struct  ip6asfrag {
+	struct ip6asfrag *ip6af_down;
+	struct ip6asfrag *ip6af_up;
+	struct mbuf     *ip6af_m;
+	int             ip6af_offset;   /* offset in ip6af_m to next header */
+	int             ip6af_frglen;   /* fragmentable part length */
+	int             ip6af_off;      /* fragment offset */
+	u_int16_t       ip6af_mff;      /* more fragment bit in frag off */
+};
+
+#define IP6_REASS_MBUF(ip6af) ((ip6af)->ip6af_m)
 
 MBUFQ_HEAD(fq6_head);
 
@@ -105,9 +116,10 @@ static void frag6_enq(struct ip6asfrag *, struct ip6asfrag *);
 static void frag6_deq(struct ip6asfrag *);
 static void frag6_insque(struct ip6q *, struct ip6q *);
 static void frag6_remque(struct ip6q *);
+static void frag6_purgef(struct ip6q *, struct fq6_head *, struct fq6_head *);
 static void frag6_freef(struct ip6q *, struct fq6_head *, struct fq6_head *);
 
-static int frag6_timeout_run;		/* frag6 timer is scheduled to run */
+static int frag6_timeout_run;           /* frag6 timer is scheduled to run */
 static void frag6_timeout(void *);
 static void frag6_sched_timeout(void);
 
@@ -118,20 +130,20 @@ static struct ip6asfrag *ip6af_alloc(int);
 static void ip6af_free(struct ip6asfrag *);
 
 decl_lck_mtx_data(static, ip6qlock);
-static lck_attr_t	*ip6qlock_attr;
-static lck_grp_t	*ip6qlock_grp;
-static lck_grp_attr_t	*ip6qlock_grp_attr;
+static lck_attr_t       *ip6qlock_attr;
+static lck_grp_t        *ip6qlock_grp;
+static lck_grp_attr_t   *ip6qlock_grp_attr;
 
 /* IPv6 fragment reassembly queues (protected by ip6qlock) */
-static struct ip6q ip6q;		/* ip6 reassembly queues */
-static int ip6_maxfragpackets;		/* max packets in reass queues */
-static u_int32_t frag6_nfragpackets;	/* # of packets in reass queues */
-static int ip6_maxfrags;		/* max fragments in reass queues */
-static u_int32_t frag6_nfrags;		/* # of fragments in reass queues */
-static u_int32_t ip6q_limit;		/* ip6q allocation limit */
-static u_int32_t ip6q_count;		/* current # of allocated ip6q's */
-static u_int32_t ip6af_limit;		/* ip6asfrag allocation limit */
-static u_int32_t ip6af_count;		/* current # of allocated ip6asfrag's */
+static struct ip6q ip6q;                /* ip6 reassembly queues */
+static int ip6_maxfragpackets;          /* max packets in reass queues */
+static u_int32_t frag6_nfragpackets;    /* # of packets in reass queues */
+static int ip6_maxfrags;                /* max fragments in reass queues */
+static u_int32_t frag6_nfrags;          /* # of fragments in reass queues */
+static u_int32_t ip6q_limit;            /* ip6q allocation limit */
+static u_int32_t ip6q_count;            /* current # of allocated ip6q's */
+static u_int32_t ip6af_limit;           /* ip6asfrag allocation limit */
+static u_int32_t ip6af_count;           /* current # of allocated ip6asfrag's */
 
 static int sysctl_maxfragpackets SYSCTL_HANDLER_ARGS;
 static int sysctl_maxfrags SYSCTL_HANDLER_ARGS;
@@ -158,9 +170,9 @@ void
 frag6_init(void)
 {
 	/* ip6q_alloc() uses mbufs for IPv6 fragment queue structures */
-	_CASSERT(sizeof (struct ip6q) <= _MLEN);
+	_CASSERT(sizeof(struct ip6q) <= _MLEN);
 	/* ip6af_alloc() uses mbufs for IPv6 fragment queue structures */
-	_CASSERT(sizeof (struct ip6asfrag) <= _MLEN);
+	_CASSERT(sizeof(struct ip6asfrag) <= _MLEN);
 
 	/* IPv6 fragment reassembly queue lock */
 	ip6qlock_grp_attr  = lck_grp_attr_alloc_init();
@@ -194,7 +206,7 @@ frag6_scrub_context(struct mbuf *m)
 static int
 frag6_restore_context(struct mbuf *m)
 {
-	return ((int)m->m_pkthdr.pkt_hdr);
+	return (int)m->m_pkthdr.pkt_hdr;
 }
 
 /*
@@ -277,29 +289,31 @@ int
 frag6_input(struct mbuf **mp, int *offp, int proto)
 {
 #pragma unused(proto)
-	struct mbuf *m = *mp, *t;
-	struct ip6_hdr *ip6;
-	struct ip6_frag *ip6f;
-	struct ip6q *q6;
-	struct ip6asfrag *af6, *ip6af, *af6dwn;
-	int offset = *offp, nxt, i, next;
+	struct mbuf *m = *mp, *t = NULL;
+	struct ip6_hdr *ip6 = NULL;
+	struct ip6_frag *ip6f = NULL;
+	struct ip6q *q6 = NULL;
+	struct ip6asfrag *af6 = NULL, *ip6af = NULL, *af6dwn = NULL;
+	int offset = *offp, i = 0, next = 0;
+	u_int8_t nxt = 0;
 	int first_frag = 0;
-	int fragoff, frgpartlen;	/* must be larger than u_int16_t */
+	int fragoff = 0, frgpartlen = 0;        /* must be larger than u_int16_t */
 	struct ifnet *dstifp = NULL;
-	u_int8_t ecn, ecn0;
-	uint32_t csum, csum_flags;
-	struct fq6_head diq6;
+	u_int8_t ecn = 0, ecn0 = 0;
+	uint32_t csum = 0, csum_flags = 0;
+	struct fq6_head diq6 = {};
 	int locked = 0;
+	boolean_t drop_fragq = FALSE;
 
 	VERIFY(m->m_flags & M_PKTHDR);
 
-	MBUFQ_INIT(&diq6);	/* for deferred ICMP param problem errors */
+	MBUFQ_INIT(&diq6);      /* for deferred ICMP param problem errors */
 
 	/* Expect 32-bit aligned data pointer on strict-align platforms */
 	MBUF_STRICT_DATA_ALIGNMENT_CHECK_32(m);
 
-	ip6 = mtod(m, struct ip6_hdr *);
 	IP6_EXTHDR_CHECK(m, offset, sizeof(struct ip6_frag), goto done);
+	ip6 = mtod(m, struct ip6_hdr *);
 	ip6f = (struct ip6_frag *)((caddr_t)ip6 + offset);
 
 #ifdef IN6_IFSTAT_STRICT
@@ -318,8 +332,9 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 #endif /* IN6_IFSTAT_STRICT */
 
 	/* we are violating the spec, this may not be the dst interface */
-	if (dstifp == NULL)
+	if (dstifp == NULL) {
 		dstifp = m->m_pkthdr.rcvif;
+	}
 
 	/* jumbo payload can't contain a fragment header */
 	if (ip6->ip6_plen == 0) {
@@ -363,24 +378,20 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	 */
 	if ((ip6f->ip6f_offlg & ~IP6F_RESERVED_MASK) == 0) {
 		/*
+		 * Mark packet as reassembled.
 		 * In ICMPv6 processing, we drop certain
 		 * NDP messages that are not expected to
 		 * have fragment header based on recommendations
 		 * against security vulnerability as described in
 		 * RFC 6980.
-		 * We set PKTF_REASSEMBLED flag to let ICMPv6 NDP
-		 * drop such packets.
-		 * However there are already devices running software
-		 * that are creating interface with MTU < IPv6 Min
-		 * MTU. We should not have allowed that but they are
-		 * out, and sending atomic NDP fragments.
-		 * For that reason, we do not set the same flag here
-		 * and relax the check.
+		 * Treat atomic fragments as re-assembled packets as well.
 		 */
+		m->m_pkthdr.pkt_flags |= PKTF_REASSEMBLED;
 		ip6stat.ip6s_atmfrag_rcvd++;
 		in6_ifstat_inc(dstifp, ifs6_atmfrag_rcvd);
+		*mp = m;
 		*offp = offset;
-		return (ip6f->ip6f_nxt);
+		return ip6f->ip6f_nxt;
 	}
 
 	/*
@@ -392,12 +403,12 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	 * care of any trailing bytes and subtract out their partial sum.
 	 */
 	if (ip6f->ip6f_nxt == IPPROTO_UDP &&
-	    offset == (sizeof (*ip6) + sizeof (*ip6f)) &&
+	    offset == (sizeof(*ip6) + sizeof(*ip6f)) &&
 	    (m->m_pkthdr.csum_flags &
 	    (CSUM_DATA_VALID | CSUM_PARTIAL | CSUM_PSEUDO_HDR)) ==
 	    (CSUM_DATA_VALID | CSUM_PARTIAL)) {
 		uint32_t start = m->m_pkthdr.csum_rx_start;
-		uint32_t ip_len = (sizeof (*ip6) + ntohs(ip6->ip6_plen));
+		uint32_t ip_len = (sizeof(*ip6) + ntohs(ip6->ip6_plen));
 		int32_t trailer = (m_pktlen(m) - ip_len);
 		uint32_t swbytes = (uint32_t)trailer;
 
@@ -409,7 +420,7 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 
 			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_src)) {
 				s = ip6->ip6_src.s6_addr16[1];
-				ip6->ip6_src.s6_addr16[1] = 0 ;
+				ip6->ip6_src.s6_addr16[1] = 0;
 			}
 			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_dst)) {
 				d = ip6->ip6_dst.s6_addr16[1];
@@ -419,23 +430,27 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 			/* callee folds in sum */
 			csum = m_adj_sum16(m, start, offset,
 			    (ip_len - offset), csum);
-			if (offset > start)
+			if (offset > start) {
 				swbytes += (offset - start);
-			else
+			} else {
 				swbytes += (start - offset);
+			}
 
-			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_src))
+			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_src)) {
 				ip6->ip6_src.s6_addr16[1] = s;
-			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_dst))
+			}
+			if (IN6_IS_SCOPE_EMBED(&ip6->ip6_dst)) {
 				ip6->ip6_dst.s6_addr16[1] = d;
-
+			}
 		}
 		csum_flags = m->m_pkthdr.csum_flags;
 
-		if (swbytes != 0)
+		if (swbytes != 0) {
 			udp_in6_cksum_stats(swbytes);
-		if (trailer != 0)
+		}
+		if (trailer != 0) {
 			m_adj(m, -trailer);
+		}
 	} else {
 		csum = 0;
 		csum_flags = 0;
@@ -450,39 +465,47 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	lck_mtx_lock(&ip6qlock);
 	locked = 1;
 
-	for (q6 = ip6q.ip6q_next; q6 != &ip6q; q6 = q6->ip6q_next)
+	for (q6 = ip6q.ip6q_next; q6 != &ip6q; q6 = q6->ip6q_next) {
 		if (ip6f->ip6f_ident == q6->ip6q_ident &&
 		    IN6_ARE_ADDR_EQUAL(&ip6->ip6_src, &q6->ip6q_src) &&
-		    IN6_ARE_ADDR_EQUAL(&ip6->ip6_dst, &q6->ip6q_dst))
+		    IN6_ARE_ADDR_EQUAL(&ip6->ip6_dst, &q6->ip6q_dst)) {
 			break;
+		}
+	}
 
 	if (q6 == &ip6q) {
 		/*
-		 * the first fragment to arrive, create a reassembly queue.
+		 * Create a reassembly queue as this is the first fragment to
+		 * arrive.
+		 * By first frag, we don't mean the one with offset 0, but
+		 * any of the fragments of the fragmented packet that has
+		 * reached us first.
 		 */
 		first_frag = 1;
 
 		q6 = ip6q_alloc(M_DONTWAIT);
-		if (q6 == NULL)
+		if (q6 == NULL) {
 			goto dropfrag;
+		}
 
 		frag6_insque(q6, &ip6q);
 		frag6_nfragpackets++;
 
 		/* ip6q_nxt will be filled afterwards, from 1st fragment */
-		q6->ip6q_down	= q6->ip6q_up = (struct ip6asfrag *)q6;
+		q6->ip6q_down   = q6->ip6q_up = (struct ip6asfrag *)q6;
 #ifdef notyet
-		q6->ip6q_nxtp	= (u_char *)nxtp;
+		q6->ip6q_nxtp   = (u_char *)nxtp;
 #endif
-		q6->ip6q_ident	= ip6f->ip6f_ident;
-		q6->ip6q_ttl	= IPV6_FRAGTTL;
-		q6->ip6q_src	= ip6->ip6_src;
-		q6->ip6q_dst	= ip6->ip6_dst;
-		q6->ip6q_ecn	=
+		q6->ip6q_ident  = ip6f->ip6f_ident;
+		q6->ip6q_ttl    = IPV6_FRAGTTL;
+		q6->ip6q_src    = ip6->ip6_src;
+		q6->ip6q_dst    = ip6->ip6_dst;
+		q6->ip6q_ecn    =
 		    (ntohl(ip6->ip6_flow) >> 20) & IPTOS_ECN_MASK;
-		q6->ip6q_unfrglen = -1;	/* The 1st fragment has not arrived. */
+		q6->ip6q_unfrglen = -1; /* The 1st fragment has not arrived. */
 
 		q6->ip6q_nfrag = 0;
+		q6->ip6q_flags = 0;
 
 		/*
 		 * If the first fragment has valid checksum offload
@@ -492,6 +515,10 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 			q6->ip6q_csum = csum;
 			q6->ip6q_csum_flags = csum_flags;
 		}
+	}
+
+	if (q6->ip6q_flags & IP6QF_DIRTY) {
+		goto dropfrag;
 	}
 
 	/*
@@ -536,8 +563,23 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	 * fragment already stored in the reassembly queue.
 	 */
 	if (fragoff == 0) {
+		/*
+		 * https://tools.ietf.org/html/rfc8200#page-20
+		 * If the first fragment does not include all headers through an
+		 * Upper-Layer header, then that fragment should be discarded and
+		 * an ICMP Parameter Problem, Code 3, message should be sent to
+		 * the source of the fragment, with the Pointer field set to zero.
+		 */
+		if (!ip6_pkt_has_ulp(m)) {
+			lck_mtx_unlock(&ip6qlock);
+			locked = 0;
+			icmp6_error(m, ICMP6_PARAM_PROB,
+			    ICMP6_PARAMPROB_FIRSTFRAG_INCOMP_HDR, 0);
+			m = NULL;
+			goto done;
+		}
 		for (af6 = q6->ip6q_down; af6 != (struct ip6asfrag *)q6;
-		     af6 = af6dwn) {
+		    af6 = af6dwn) {
 			af6dwn = af6->ip6af_down;
 
 			if (q6->ip6q_unfrglen + af6->ip6af_off + af6->ip6af_frglen >
@@ -561,7 +603,7 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 				ip6err->ip6_dst = q6->ip6q_dst;
 
 				frag6_save_context(merr,
-				    erroff - sizeof (struct ip6_frag) +
+				    erroff - sizeof(struct ip6_frag) +
 				    offsetof(struct ip6_frag, ip6f_offlg));
 
 				MBUFQ_ENQUEUE(&diq6, merr);
@@ -570,8 +612,9 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	}
 
 	ip6af = ip6af_alloc(M_DONTWAIT);
-	if (ip6af == NULL)
+	if (ip6af == NULL) {
 		goto dropfrag;
+	}
 
 	ip6af->ip6af_mff = ip6f->ip6f_offlg & IP6F_MORE_FRAG;
 	ip6af->ip6af_off = fragoff;
@@ -596,8 +639,9 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 			ip6af_free(ip6af);
 			goto dropfrag;
 		}
-		if (ecn0 != IPTOS_ECN_CE)
+		if (ecn0 != IPTOS_ECN_CE) {
 			q6->ip6q_ecn = IPTOS_ECN_CE;
+		}
 	}
 	if (ecn == IPTOS_ECN_NOTECT && ecn0 != IPTOS_ECN_NOTECT) {
 		ip6af_free(ip6af);
@@ -608,100 +652,68 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	 * Find a segment which begins after this one does.
 	 */
 	for (af6 = q6->ip6q_down; af6 != (struct ip6asfrag *)q6;
-	     af6 = af6->ip6af_down)
-		if (af6->ip6af_off > ip6af->ip6af_off)
+	    af6 = af6->ip6af_down) {
+		if (af6->ip6af_off > ip6af->ip6af_off) {
 			break;
+		}
+	}
 
-#if 0
 	/*
-	 * If there is a preceding segment, it may provide some of
-	 * our data already.  If so, drop the data from the incoming
-	 * segment.  If it provides all of our data, drop us.
+	 * As per RFC 8200 reassembly rules, we MUST drop the entire
+	 * chain of fragments for a packet to be assembled, if we receive
+	 * any overlapping fragments.
+	 * https://tools.ietf.org/html/rfc8200#page-20
 	 *
-	 * If some of the data is dropped from the preceding
-	 * segment, then it's checksum is invalidated.
+	 * To avoid more conditional code, just reuse frag6_freef and defer
+	 * its call to post fragment insertion in the queue.
 	 */
 	if (af6->ip6af_up != (struct ip6asfrag *)q6) {
-		i = af6->ip6af_up->ip6af_off + af6->ip6af_up->ip6af_frglen
-			- ip6af->ip6af_off;
-		if (i > 0) {
-			if (i >= ip6af->ip6af_frglen)
+		if (af6->ip6af_up->ip6af_off == ip6af->ip6af_off) {
+			if (af6->ip6af_up->ip6af_frglen != ip6af->ip6af_frglen) {
+				drop_fragq = TRUE;
+			} else {
+				/*
+				 * XXX Ideally we should be comparing the entire
+				 * packet here but for now just use off and fraglen
+				 * to ignore a duplicate fragment.
+				 */
+				ip6af_free(ip6af);
 				goto dropfrag;
-			m_adj(IP6_REASS_MBUF(ip6af), i);
-			q6->ip6q_csum_flags = 0;
-			ip6af->ip6af_off += i;
-			ip6af->ip6af_frglen -= i;
+			}
+		} else {
+			i = af6->ip6af_up->ip6af_off + af6->ip6af_up->ip6af_frglen
+			    - ip6af->ip6af_off;
+			if (i > 0) {
+				drop_fragq = TRUE;
+			}
 		}
 	}
 
-	/*
-	 * While we overlap succeeding segments trim them or,
-	 * if they are completely covered, dequeue them.
-	 */
-	while (af6 != (struct ip6asfrag *)q6 &&
-	       ip6af->ip6af_off + ip6af->ip6af_frglen > af6->ip6af_off) {
-		i = (ip6af->ip6af_off + ip6af->ip6af_frglen) - af6->ip6af_off;
-		if (i < af6->ip6af_frglen) {
-			af6->ip6af_frglen -= i;
-			af6->ip6af_off += i;
-			m_adj(IP6_REASS_MBUF(af6), i);
-			q6->ip6q_csum_flags = 0;
-			break;
-		}
-		af6 = af6->ip6af_down;
-		m_freem(IP6_REASS_MBUF(af6->ip6af_up));
-		frag6_deq(af6->ip6af_up);
-	}
-#else
-	/*
-	 * If the incoming framgent overlaps some existing fragments in
-	 * the reassembly queue, drop it, since it is dangerous to override
-	 * existing fragments from a security point of view.
-	 * We don't know which fragment is the bad guy - here we trust
-	 * fragment that came in earlier, with no real reason.
-	 *
-	 * Note: due to changes after disabling this part, mbuf passed to
-	 * m_adj() below now does not meet the requirement.
-	 */
-	if (af6->ip6af_up != (struct ip6asfrag *)q6) {
-		i = af6->ip6af_up->ip6af_off + af6->ip6af_up->ip6af_frglen
-			- ip6af->ip6af_off;
-		if (i > 0) {
-#if 0				/* suppress the noisy log */
-			log(LOG_ERR, "%d bytes of a fragment from %s "
-			    "overlaps the previous fragment\n",
-			    i, ip6_sprintf(&q6->ip6q_src));
-#endif
-			ip6af_free(ip6af);
-			goto dropfrag;
-		}
-	}
 	if (af6 != (struct ip6asfrag *)q6) {
+		/*
+		 * Given that we break when af6->ip6af_off > ip6af->ip6af_off,
+		 * we shouldn't need a check for duplicate fragment here.
+		 * For now just assert.
+		 */
+		VERIFY(af6->ip6af_off != ip6af->ip6af_off);
 		i = (ip6af->ip6af_off + ip6af->ip6af_frglen) - af6->ip6af_off;
 		if (i > 0) {
-#if 0				/* suppress the noisy log */
-			log(LOG_ERR, "%d bytes of a fragment from %s "
-			    "overlaps the succeeding fragment",
-			    i, ip6_sprintf(&q6->ip6q_src));
-#endif
-			ip6af_free(ip6af);
-			goto dropfrag;
+			drop_fragq = TRUE;
 		}
 	}
-#endif
 
 	/*
 	 * If this fragment contains similar checksum offload info
 	 * as that of the existing ones, accumulate checksum.  Otherwise,
 	 * invalidate checksum offload info for the entire datagram.
 	 */
-	if (csum_flags != 0 && csum_flags == q6->ip6q_csum_flags)
+	if (csum_flags != 0 && csum_flags == q6->ip6q_csum_flags) {
 		q6->ip6q_csum += csum;
-	else if (q6->ip6q_csum_flags != 0)
+	} else if (q6->ip6q_csum_flags != 0) {
 		q6->ip6q_csum_flags = 0;
+	}
 
 insert:
-
 	/*
 	 * Stick new segment in its place;
 	 * check for complete reassembly.
@@ -711,15 +723,56 @@ insert:
 	frag6_enq(ip6af, af6->ip6af_up);
 	frag6_nfrags++;
 	q6->ip6q_nfrag++;
-#if 0 /* xxx */
-	if (q6 != ip6q.ip6q_next) {
-		frag6_remque(q6);
-		frag6_insque(q6, &ip6q);
+
+	/*
+	 * This holds true, when we receive overlapping fragments.
+	 * We must silently drop all the fragments we have received
+	 * so far.
+	 * Also mark q6 as dirty, so as to not add any new fragments to it.
+	 * Make sure even q6 marked dirty is kept till timer expires for
+	 * reassembly and when that happens, silenty get rid of q6
+	 */
+	if (drop_fragq) {
+		struct fq6_head dfq6 = {0};
+		MBUFQ_INIT(&dfq6);      /* for deferred frees */
+		q6->ip6q_flags |= IP6QF_DIRTY;
+		/* Purge all the fragments but do not free q6 */
+		frag6_purgef(q6, &dfq6, NULL);
+		af6 = NULL;
+
+		/* free fragments that need to be freed */
+		if (!MBUFQ_EMPTY(&dfq6)) {
+			MBUFQ_DRAIN(&dfq6);
+		}
+		VERIFY(MBUFQ_EMPTY(&dfq6));
+		/*
+		 * Just in case the above logic got anything added
+		 * to diq6, drain it.
+		 * Please note that these mbufs are not present in the
+		 * fragment queue and are added to diq6 for sending
+		 * ICMPv6 error.
+		 * Given that the current fragment was an overlapping
+		 * fragment and the RFC requires us to not send any
+		 * ICMPv6 errors while purging the entire queue.
+		 * Just empty it out.
+		 */
+		if (!MBUFQ_EMPTY(&diq6)) {
+			MBUFQ_DRAIN(&diq6);
+		}
+		VERIFY(MBUFQ_EMPTY(&diq6));
+		/*
+		 * MBUFQ_DRAIN would have drained all the mbufs
+		 * in the fragment queue.
+		 * This shouldn't be needed as we are returning IPPROTO_DONE
+		 * from here but change the passed mbuf pointer to NULL.
+		 */
+		*mp = NULL;
+		lck_mtx_unlock(&ip6qlock);
+		return IPPROTO_DONE;
 	}
-#endif
 	next = 0;
 	for (af6 = q6->ip6q_down; af6 != (struct ip6asfrag *)q6;
-	     af6 = af6->ip6af_down) {
+	    af6 = af6->ip6af_down) {
 		if (af6->ip6af_off != next) {
 			lck_mtx_unlock(&ip6qlock);
 			locked = 0;
@@ -745,8 +798,9 @@ insert:
 	while (af6 != (struct ip6asfrag *)q6) {
 		af6dwn = af6->ip6af_down;
 		frag6_deq(af6);
-		while (t->m_next)
+		while (t->m_next) {
 			t = t->m_next;
+		}
 		t->m_next = IP6_REASS_MBUF(af6);
 		m_adj(t->m_next, af6->ip6af_offset);
 		ip6af_free(af6);
@@ -763,14 +817,13 @@ insert:
 
 		ADDCARRY(csum);
 
-		m->m_pkthdr.csum_rx_val = csum;
-		m->m_pkthdr.csum_rx_start = sizeof (struct ip6_hdr);
+		m->m_pkthdr.csum_rx_val = (u_int16_t)csum;
+		m->m_pkthdr.csum_rx_start = sizeof(struct ip6_hdr);
 		m->m_pkthdr.csum_flags = q6->ip6q_csum_flags;
 	} else if ((m->m_pkthdr.rcvif->if_flags & IFF_LOOPBACK) ||
 	    (m->m_pkthdr.pkt_flags & PKTF_LOOP)) {
 		/* loopback checksums are always OK */
 		m->m_pkthdr.csum_data = 0xffff;
-		m->m_pkthdr.csum_flags &= ~CSUM_PARTIAL;
 		m->m_pkthdr.csum_flags = CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
 	}
 
@@ -778,11 +831,12 @@ insert:
 	offset = ip6af->ip6af_offset - sizeof(struct ip6_frag);
 	ip6af_free(ip6af);
 	ip6 = mtod(m, struct ip6_hdr *);
-	ip6->ip6_plen = htons((u_short)next + offset - sizeof(struct ip6_hdr));
+	ip6->ip6_plen = htons((uint16_t)(next + offset - sizeof(struct ip6_hdr)));
 	ip6->ip6_src = q6->ip6q_src;
 	ip6->ip6_dst = q6->ip6q_dst;
-	if (q6->ip6q_ecn == IPTOS_ECN_CE)
+	if (q6->ip6q_ecn == IPTOS_ECN_CE) {
 		ip6->ip6_flow |= htonl(IPTOS_ECN_CE << 20);
+	}
 
 	nxt = q6->ip6q_nxt;
 #ifdef notyet
@@ -822,7 +876,7 @@ insert:
 	frag6_nfrags -= q6->ip6q_nfrag;
 	ip6q_free(q6);
 
-	if (m->m_flags & M_PKTHDR) {	/* Isn't it always true? */
+	if (m->m_flags & M_PKTHDR) {    /* Isn't it always true? */
 		m_fixhdr(m);
 		/*
 		 * Mark packet as reassembled
@@ -848,15 +902,16 @@ insert:
 	in6_ifstat_inc(dstifp, ifs6_reass_ok);
 	frag6_icmp6_paramprob_error(&diq6);
 	VERIFY(MBUFQ_EMPTY(&diq6));
-	return (nxt);
+	return nxt;
 
 done:
 	VERIFY(m == NULL);
+	*mp = m;
 	if (!locked) {
 		if (frag6_nfragpackets == 0) {
 			frag6_icmp6_paramprob_error(&diq6);
 			VERIFY(MBUFQ_EMPTY(&diq6));
-			return (IPPROTO_DONE);
+			return IPPROTO_DONE;
 		}
 		lck_mtx_lock(&ip6qlock);
 	}
@@ -865,7 +920,7 @@ done:
 	lck_mtx_unlock(&ip6qlock);
 	frag6_icmp6_paramprob_error(&diq6);
 	VERIFY(MBUFQ_EMPTY(&diq6));
-	return (IPPROTO_DONE);
+	return IPPROTO_DONE;
 
 dropfrag:
 	ip6stat.ip6s_fragdropped++;
@@ -874,34 +929,44 @@ dropfrag:
 	lck_mtx_unlock(&ip6qlock);
 	in6_ifstat_inc(dstifp, ifs6_reass_fail);
 	m_freem(m);
+	*mp = NULL;
 	frag6_icmp6_paramprob_error(&diq6);
 	VERIFY(MBUFQ_EMPTY(&diq6));
-	return (IPPROTO_DONE);
+	return IPPROTO_DONE;
 }
 
 /*
- * Free a fragment reassembly header and all
- * associated datagrams.
+ * This routine removes the enqueued frames from the passed fragment
+ * header and enqueues those to dfq6 which is an out-arg for the dequeued
+ * fragments.
+ * If the caller also provides diq6, this routine also enqueues the 0 offset
+ * fragment to that list as it potentially gets used by the caller
+ * to prepare the relevant ICMPv6 error message (time exceeded or
+ * param problem).
+ * It leaves the fragment header object (q6) intact.
  */
-void
-frag6_freef(struct ip6q *q6, struct fq6_head *dfq6, struct fq6_head *diq6)
+static void
+frag6_purgef(struct ip6q *q6, struct fq6_head *dfq6, struct fq6_head *diq6)
 {
-	struct ip6asfrag *af6, *down6;
+	struct ip6asfrag *af6 = NULL;
+	struct ip6asfrag *down6 = NULL;
 
 	LCK_MTX_ASSERT(&ip6qlock, LCK_MTX_ASSERT_OWNED);
 
 	for (af6 = q6->ip6q_down; af6 != (struct ip6asfrag *)q6;
-	     af6 = down6) {
+	    af6 = down6) {
 		struct mbuf *m = IP6_REASS_MBUF(af6);
 
 		down6 = af6->ip6af_down;
 		frag6_deq(af6);
 
 		/*
-		 * Return ICMP time exceeded error for the 1st fragment.
-		 * Just free other fragments.
+		 * If caller wants to generate ICMP time-exceeded,
+		 * as indicated by the argument diq6, return it for
+		 * the first fragment and add others to the fragment
+		 * free queue.
 		 */
-		if (af6->ip6af_off == 0) {
+		if (af6->ip6af_off == 0 && diq6 != NULL) {
 			struct ip6_hdr *ip6;
 
 			/* adjust pointer */
@@ -910,14 +975,28 @@ frag6_freef(struct ip6q *q6, struct fq6_head *dfq6, struct fq6_head *diq6)
 			/* restore source and destination addresses */
 			ip6->ip6_src = q6->ip6q_src;
 			ip6->ip6_dst = q6->ip6q_dst;
-
 			MBUFQ_ENQUEUE(diq6, m);
 		} else {
 			MBUFQ_ENQUEUE(dfq6, m);
 		}
 		ip6af_free(af6);
-
 	}
+}
+
+/*
+ * This routine removes the enqueued frames from the passed fragment
+ * header and enqueues those to dfq6 which is an out-arg for the dequeued
+ * fragments.
+ * If the caller also provides diq6, this routine also enqueues the 0 offset
+ * fragment to that list as it potentially gets used by the caller
+ * to prepare the relevant ICMPv6 error message (time exceeded or
+ * param problem).
+ * It also remove the fragment header object from the queue and frees it.
+ */
+static void
+frag6_freef(struct ip6q *q6, struct fq6_head *dfq6, struct fq6_head *diq6)
+{
+	frag6_purgef(q6, dfq6, diq6);
 	frag6_remque(q6);
 	frag6_nfragpackets--;
 	frag6_nfrags -= q6->ip6q_nfrag;
@@ -958,7 +1037,7 @@ frag6_insque(struct ip6q *new, struct ip6q *old)
 
 	new->ip6q_prev = old;
 	new->ip6q_next = old->ip6q_next;
-	old->ip6q_next->ip6q_prev= new;
+	old->ip6q_next->ip6q_prev = new;
 	old->ip6q_next = new;
 }
 
@@ -981,10 +1060,11 @@ frag6_timeout(void *arg)
 {
 #pragma unused(arg)
 	struct fq6_head dfq6, diq6;
+	struct fq6_head *diq6_tmp = NULL;
 	struct ip6q *q6;
 
-	MBUFQ_INIT(&dfq6);	/* for deferred frees */
-	MBUFQ_INIT(&diq6);	/* for deferred ICMP time exceeded errors */
+	MBUFQ_INIT(&dfq6);      /* for deferred frees */
+	MBUFQ_INIT(&diq6);      /* for deferred ICMP time exceeded errors */
 
 	/*
 	 * Update coarse-grained networking timestamp (in sec.); the idea
@@ -995,16 +1075,23 @@ frag6_timeout(void *arg)
 
 	lck_mtx_lock(&ip6qlock);
 	q6 = ip6q.ip6q_next;
-	if (q6)
+	if (q6) {
 		while (q6 != &ip6q) {
 			--q6->ip6q_ttl;
 			q6 = q6->ip6q_next;
 			if (q6->ip6q_prev->ip6q_ttl == 0) {
 				ip6stat.ip6s_fragtimeout++;
 				/* XXX in6_ifstat_inc(ifp, ifs6_reass_fail) */
-				frag6_freef(q6->ip6q_prev, &dfq6, &diq6);
+				/*
+				 * Avoid sending ICMPv6 Time Exceeded for fragment headers
+				 * that are marked dirty.
+				 */
+				diq6_tmp = (q6->ip6q_prev->ip6q_flags & IP6QF_DIRTY) ?
+				    NULL : &diq6;
+				frag6_freef(q6->ip6q_prev, &dfq6, diq6_tmp);
 			}
 		}
+	}
 	/*
 	 * If we are over the maximum number of fragments
 	 * (due to the limit being lowered), drain off
@@ -1015,7 +1102,13 @@ frag6_timeout(void *arg)
 		    ip6q.ip6q_prev) {
 			ip6stat.ip6s_fragoverflow++;
 			/* XXX in6_ifstat_inc(ifp, ifs6_reass_fail) */
-			frag6_freef(ip6q.ip6q_prev, &dfq6, &diq6);
+			/*
+			 * Avoid sending ICMPv6 Time Exceeded for fragment headers
+			 * that are marked dirty.
+			 */
+			diq6_tmp = (ip6q.ip6q_prev->ip6q_flags & IP6QF_DIRTY) ?
+			    NULL : &diq6;
+			frag6_freef(ip6q.ip6q_prev, &dfq6, diq6_tmp);
 		}
 	}
 	/* re-arm the purge timer if there's work to do */
@@ -1024,8 +1117,9 @@ frag6_timeout(void *arg)
 	lck_mtx_unlock(&ip6qlock);
 
 	/* free fragments that need to be freed */
-	if (!MBUFQ_EMPTY(&dfq6))
+	if (!MBUFQ_EMPTY(&dfq6)) {
 		MBUFQ_DRAIN(&dfq6);
+	}
 
 	frag6_icmp6_timeex_error(&diq6);
 
@@ -1051,21 +1145,29 @@ void
 frag6_drain(void)
 {
 	struct fq6_head dfq6, diq6;
+	struct fq6_head *diq6_tmp = NULL;
 
-	MBUFQ_INIT(&dfq6);	/* for deferred frees */
-	MBUFQ_INIT(&diq6);	/* for deferred ICMP time exceeded errors */
+	MBUFQ_INIT(&dfq6);      /* for deferred frees */
+	MBUFQ_INIT(&diq6);      /* for deferred ICMP time exceeded errors */
 
 	lck_mtx_lock(&ip6qlock);
 	while (ip6q.ip6q_next != &ip6q) {
 		ip6stat.ip6s_fragdropped++;
 		/* XXX in6_ifstat_inc(ifp, ifs6_reass_fail) */
-		frag6_freef(ip6q.ip6q_next, &dfq6, &diq6);
+		/*
+		 * Avoid sending ICMPv6 Time Exceeded for fragment headers
+		 * that are marked dirty.
+		 */
+		diq6_tmp = (ip6q.ip6q_next->ip6q_flags & IP6QF_DIRTY) ?
+		    NULL : &diq6;
+		frag6_freef(ip6q.ip6q_next, &dfq6, diq6_tmp);
 	}
 	lck_mtx_unlock(&ip6qlock);
 
 	/* free fragments that need to be freed */
-	if (!MBUFQ_EMPTY(&dfq6))
+	if (!MBUFQ_EMPTY(&dfq6)) {
 		MBUFQ_DRAIN(&dfq6);
+	}
 
 	frag6_icmp6_timeex_error(&diq6);
 
@@ -1084,18 +1186,19 @@ ip6q_alloc(int how)
 	 * from frag6_nfragpackets since the latter represents the elements
 	 * already in the reassembly queues.
 	 */
-	if (ip6q_limit > 0 && ip6q_count > ip6q_limit)
-		return (NULL);
+	if (ip6q_limit > 0 && ip6q_count > ip6q_limit) {
+		return NULL;
+	}
 
 	t = m_get(how, MT_FTABLE);
 	if (t != NULL) {
 		atomic_add_32(&ip6q_count, 1);
 		q6 = mtod(t, struct ip6q *);
-		bzero(q6, sizeof (*q6));
+		bzero(q6, sizeof(*q6));
 	} else {
 		q6 = NULL;
 	}
-	return (q6);
+	return q6;
 }
 
 static void
@@ -1116,18 +1219,19 @@ ip6af_alloc(int how)
 	 * from frag6_nfrags since the latter represents the elements
 	 * already in the reassembly queues.
 	 */
-	if (ip6af_limit > 0 && ip6af_count > ip6af_limit)
-		return (NULL);
+	if (ip6af_limit > 0 && ip6af_count > ip6af_limit) {
+		return NULL;
+	}
 
 	t = m_get(how, MT_FTABLE);
 	if (t != NULL) {
 		atomic_add_32(&ip6af_count, 1);
 		af6 = mtod(t, struct ip6asfrag *);
-		bzero(af6, sizeof (*af6));
+		bzero(af6, sizeof(*af6));
 	} else {
 		af6 = NULL;
 	}
-	return (af6);
+	return af6;
 }
 
 static void
@@ -1144,26 +1248,32 @@ ip6q_updateparams(void)
 	/*
 	 * -1 for unlimited allocation.
 	 */
-	if (ip6_maxfragpackets < 0)
+	if (ip6_maxfragpackets < 0) {
 		ip6q_limit = 0;
-	if (ip6_maxfrags < 0)
+	}
+	if (ip6_maxfrags < 0) {
 		ip6af_limit = 0;
+	}
 	/*
 	 * Positive number for specific bound.
 	 */
-	if (ip6_maxfragpackets > 0)
+	if (ip6_maxfragpackets > 0) {
 		ip6q_limit = ip6_maxfragpackets;
-	if (ip6_maxfrags > 0)
+	}
+	if (ip6_maxfrags > 0) {
 		ip6af_limit = ip6_maxfrags;
+	}
 	/*
 	 * Zero specifies no further fragment queue allocation -- set the
 	 * bound very low, but rely on implementation elsewhere to actually
 	 * prevent allocation and reclaim current queues.
 	 */
-	if (ip6_maxfragpackets == 0)
+	if (ip6_maxfragpackets == 0) {
 		ip6q_limit = 1;
-	if (ip6_maxfrags == 0)
+	}
+	if (ip6_maxfrags == 0) {
 		ip6af_limit = 1;
+	}
 	/*
 	 * Arm the purge timer if not already and if there's work to do
 	 */
@@ -1179,8 +1289,9 @@ sysctl_maxfragpackets SYSCTL_HANDLER_ARGS
 	lck_mtx_lock(&ip6qlock);
 	i = ip6_maxfragpackets;
 	error = sysctl_handle_int(oidp, &i, 0, req);
-	if (error || req->newptr == USER_ADDR_NULL)
+	if (error || req->newptr == USER_ADDR_NULL) {
 		goto done;
+	}
 	/* impose bounds */
 	if (i < -1 || i > (nmbclusters / 4)) {
 		error = EINVAL;
@@ -1190,7 +1301,7 @@ sysctl_maxfragpackets SYSCTL_HANDLER_ARGS
 	ip6q_updateparams();
 done:
 	lck_mtx_unlock(&ip6qlock);
-	return (error);
+	return error;
 }
 
 static int
@@ -1202,16 +1313,17 @@ sysctl_maxfrags SYSCTL_HANDLER_ARGS
 	lck_mtx_lock(&ip6qlock);
 	i = ip6_maxfrags;
 	error = sysctl_handle_int(oidp, &i, 0, req);
-	if (error || req->newptr == USER_ADDR_NULL)
+	if (error || req->newptr == USER_ADDR_NULL) {
 		goto done;
+	}
 	/* impose bounds */
 	if (i < -1 || i > (nmbclusters / 4)) {
 		error = EINVAL;
 		goto done;
 	}
-	ip6_maxfrags= i;
-	ip6q_updateparams();	/* see if we need to arm timer */
+	ip6_maxfrags = i;
+	ip6q_updateparams();    /* see if we need to arm timer */
 done:
 	lck_mtx_unlock(&ip6qlock);
-	return (error);
+	return error;
 }

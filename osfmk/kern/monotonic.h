@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Apple Inc. All rights reserved.
+ * Copyright (c) 2017-2019 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -27,6 +27,8 @@
  */
 #ifndef KERN_MONOTONIC_H
 #define KERN_MONOTONIC_H
+
+#if MONOTONIC
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -105,13 +107,6 @@ void mt_sleep(void);
  */
 void mt_wake_per_core(void);
 
-#if __ARM_CLUSTER_COUNT__
-/*
- * Called when a cluster is initialized.
- */
-void mt_cluster_init(void);
-#endif /* __ARM_CLUSTER_COUNT__ */
-
 /*
  * "Up-call" to the Mach layer to update counters from a PMI.
  */
@@ -149,11 +144,13 @@ void mt_stackshot_task(task_t task, uint64_t *instrs, uint64_t *cycles);
  */
 typedef void (*mt_pmi_fn)(bool user_mode, void *ctx);
 int mt_microstackshot_start(unsigned int ctr, uint64_t period, mt_pmi_fn fn,
-		void *ctx);
+    void *ctx);
 int mt_microstackshot_stop(void);
 
 __END_DECLS
 
 #endif /* MACH_KERNEL_PRIVATE */
+
+#endif /* MONOTONIC */
 
 #endif /* !defined(KERN_MONOTONIC_H) */

@@ -27,6 +27,7 @@
  */
 
 #include <machine/asm.h>
+#include <arm64/exception_asm.h>
 #include <arm64/machine_machdep.h>
 #include <arm64/proc_reg.h>
 #include <arm/pmap.h>
@@ -35,6 +36,49 @@
 #include "assym.s"
 
 
+
+#if HAS_BP_RET
+
+/*
+ * void set_bp_ret(void)
+ * Helper function to enable branch predictor state retention
+ * across ACC sleep
+ */
+
+	.align 2
+	.globl EXT(set_bp_ret)
+LEXT(set_bp_ret)
+	// Load bpret boot-arg
+	adrp		x14, EXT(bp_ret)@page
+	add		x14, x14, EXT(bp_ret)@pageoff
+	ldr		w14, [x14]
+
+	mrs		x13, ARM64_REG_ACC_CFG
+	and		x13, x13, (~(ARM64_REG_ACC_CFG_bpSlp_mask << ARM64_REG_ACC_CFG_bpSlp_shift))
+	and		x14, x14, #(ARM64_REG_ACC_CFG_bpSlp_mask)
+	orr		x13, x13, x14, lsl #(ARM64_REG_ACC_CFG_bpSlp_shift)
+	msr		ARM64_REG_ACC_CFG, x13
+
+	ret
+#endif // HAS_BP_RET
+
+#if HAS_NEX_PG
+	.align 2
+	.globl EXT(set_nex_pg)
+LEXT(set_nex_pg)
+	mrs		x14, MPIDR_EL1
+	// Skip if this isn't a p-core; NEX powergating isn't available for e-cores
+	and		x14, x14, #(MPIDR_PNE)
+	cbz		x14, Lnex_pg_done
+
+	// Set the SEG-recommended value of 12 additional reset cycles
+	HID_INSERT_BITS	ARM64_REG_HID13, ARM64_REG_HID13_RstCyc_mask, ARM64_REG_HID13_RstCyc_val, x13
+	HID_SET_BITS ARM64_REG_HID14, ARM64_REG_HID14_NexPwgEn, x13
+
+Lnex_pg_done:
+	ret
+
+#endif // HAS_NEX_PG
 
 /*	uint32_t get_fpscr(void):
  *		Returns (FPSR | FPCR).
@@ -131,369 +175,6 @@ Lupdate_mdscr_panic_str:
 	.asciz "MDSCR.KDE was set"
 
 
-#if __ARM_KERNEL_PROTECT__
-/*
- * __ARM_KERNEL_PROTECT__ adds two complications to TLB management:
- *
- * 1. As each pmap has two ASIDs, every TLB operation that targets an ASID must
- *   target both ASIDs for the pmap that owns the target ASID.
- *
- * 2. Any TLB operation targeting the kernel_pmap ASID (ASID 0) must target all
- *   ASIDs (as kernel_pmap mappings may be referenced while using an ASID that
- *   belongs to another pmap).  We expect these routines to be called with the
- *   EL0 ASID for the target; not the EL1 ASID.
- */
-#endif /* __ARM_KERNEL_PROTECT__ */
-
-.macro SYNC_TLB_FLUSH
-	dsb	ish
-	isb	sy
-.endmacro
-
-
-/*
- *	void sync_tlb_flush(void)
- *
- *		Synchronize one or more prior TLB flush operations
- */
-	.text
-	.align 2
-	.globl EXT(sync_tlb_flush)
-LEXT(sync_tlb_flush)
-	SYNC_TLB_FLUSH
-	ret
-
-
-.macro FLUSH_MMU_TLB
-	tlbi    vmalle1is
-.endmacro
-/*
- *	void flush_mmu_tlb_async(void)
- *
- *		Flush all TLBs, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_async)
-LEXT(flush_mmu_tlb_async)
-	FLUSH_MMU_TLB
-	ret
-
-/*
- *	void flush_mmu_tlb(void)
- *
- *		Flush all TLBs
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb)
-LEXT(flush_mmu_tlb)
-	FLUSH_MMU_TLB
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_CORE_TLB
-	tlbi    vmalle1
-.endmacro
-
-/*
- *	void flush_core_tlb_async(void)
- *
- *		Flush local core TLB, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_core_tlb_async)
-LEXT(flush_core_tlb_async)
-	FLUSH_CORE_TLB
-	ret
-
-/*
- *	void flush_core_tlb(void)
- *
- *		Flush local core TLB
- */
-	.text
-	.align 2
-	.globl EXT(flush_core_tlb)
-LEXT(flush_core_tlb)
-	FLUSH_CORE_TLB
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_MMU_TLB_ALLENTRIES
-#if __ARM_16K_PG__
-	and		x0, x0, #~0x3
-
-	/*
-	 * The code below is not necessarily correct.  From an overview of
-	 * the client code, the expected contract for TLB flushes is that
-	 * we will expand from an "address, length" pair to "start address,
-	 * end address" in the course of a TLB flush.  This suggests that
-	 * a flush for "X, X+4" is actually only asking for a flush of a
-	 * single 16KB page.  At the same time, we'd like to be prepared
-	 * for bad inputs (X, X+3), so add 3 and then truncate the 4KB page
-	 * number to a 16KB page boundary.  This should deal correctly with
-	 * unaligned inputs.
-	 *
-	 * If our expecations about client behavior are wrong however, this
-	 * will lead to occasional TLB corruption on platforms with 16KB
-	 * pages.
-	 */
-	add		x1, x1, #0x3
-	and		x1, x1, #~0x3
-#endif
-1: // Lflush_mmu_tlb_allentries_loop:
-	tlbi    vaae1is, x0
-	add		x0, x0, #(ARM_PGBYTES / 4096)	// Units are 4KB pages, as defined by the ISA
-	cmp		x0, x1
-	b.lt	1b // Lflush_mmu_tlb_allentries_loop
-.endmacro
-
-/*
- *	void flush_mmu_tlb_allentries_async(uint64_t, uint64_t)
- *
- *		Flush TLB entries, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_allentries_async)
-LEXT(flush_mmu_tlb_allentries_async)
-	FLUSH_MMU_TLB_ALLENTRIES
-	ret
-
-/*
- *	void flush_mmu_tlb_allentries(uint64_t, uint64_t)
- *
- *		Flush TLB entries
- */
-	.globl EXT(flush_mmu_tlb_allentries)
-LEXT(flush_mmu_tlb_allentries)
-	FLUSH_MMU_TLB_ALLENTRIES
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_MMU_TLB_ENTRY
-#if __ARM_KERNEL_PROTECT__
-	/*
-	 * If we are flushing ASID 0, this is a kernel operation.  With this
-	 * ASID scheme, this means we should flush all ASIDs.
-	 */
-	lsr		x2, x0, #TLBI_ASID_SHIFT
-	cmp		x2, #0
-	b.eq		1f // Lflush_mmu_tlb_entry_globally
-
-	bic		x0, x0, #(1 << TLBI_ASID_SHIFT)
-	tlbi    vae1is, x0
-	orr		x0, x0, #(1 << TLBI_ASID_SHIFT)
-#endif /* __ARM_KERNEL_PROTECT__ */
-	tlbi    vae1is, x0
-#if __ARM_KERNEL_PROTECT__
-	b		2f // Lflush_mmu_tlb_entry_done
-1: // Lflush_mmu_tlb_entry_globally:
-	tlbi    vaae1is, x0
-2: // Lflush_mmu_tlb_entry_done
-#endif /* __ARM_KERNEL_PROTECT__ */
-.endmacro
-/*
- *	void flush_mmu_tlb_entry_async(uint64_t)
- *
- *		Flush TLB entry, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_entry_async)
-LEXT(flush_mmu_tlb_entry_async)
-	FLUSH_MMU_TLB_ENTRY
-	ret
-
-/*
- *	void flush_mmu_tlb_entry(uint64_t)
- *
- *		Flush TLB entry
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_entry)
-LEXT(flush_mmu_tlb_entry)
-	FLUSH_MMU_TLB_ENTRY
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_MMU_TLB_ENTRIES
-#if __ARM_16K_PG__
-	and		x0, x0, #~0x3
-
-	/*
-	 * The code below is not necessarily correct.  From an overview of
-	 * the client code, the expected contract for TLB flushes is that
-	 * we will expand from an "address, length" pair to "start address,
-	 * end address" in the course of a TLB flush.  This suggests that
-	 * a flush for "X, X+4" is actually only asking for a flush of a
-	 * single 16KB page.  At the same time, we'd like to be prepared
-	 * for bad inputs (X, X+3), so add 3 and then truncate the 4KB page
-	 * number to a 16KB page boundary.  This should deal correctly with
-	 * unaligned inputs.
-	 *
-	 * If our expecations about client behavior are wrong however, this
-	 * will lead to occasional TLB corruption on platforms with 16KB
-	 * pages.
-	 */
-	add		x1, x1, #0x3
-	and		x1, x1, #~0x3
-#endif /* __ARM_16K_PG__ */
-#if __ARM_KERNEL_PROTECT__
-	/*
-	 * If we are flushing ASID 0, this is a kernel operation.  With this
-	 * ASID scheme, this means we should flush all ASIDs.
-	 */
-	lsr		x2, x0, #TLBI_ASID_SHIFT
-	cmp		x2, #0
-	b.eq		2f // Lflush_mmu_tlb_entries_globally_loop
-
-	bic		x0, x0, #(1 << TLBI_ASID_SHIFT)
-#endif /* __ARM_KERNEL_PROTECT__ */
-1: // Lflush_mmu_tlb_entries_loop
-	tlbi    vae1is, x0
-#if __ARM_KERNEL_PROTECT__
-	orr		x0, x0, #(1 << TLBI_ASID_SHIFT)
-	tlbi    vae1is, x0
-	bic		x0, x0, #(1 << TLBI_ASID_SHIFT)
-#endif /* __ARM_KERNEL_PROTECT__ */
-	add		x0, x0, #(ARM_PGBYTES / 4096)	// Units are pages
-	cmp		x0, x1
-	b.lt		1b // Lflush_mmu_tlb_entries_loop
-#if __ARM_KERNEL_PROTECT__
-	b		3f // Lflush_mmu_tlb_entries_done
-2: // Lflush_mmu_tlb_entries_globally_loop:
-	tlbi	vaae1is, x0
-	add		x0, x0, #(ARM_PGBYTES / 4096)	// Units are pages
-	cmp		x0, x1
-	b.lt		2b // Lflush_mmu_tlb_entries_globally_loop
-3: // Lflush_mmu_tlb_entries_done
-#endif /* __ARM_KERNEL_PROTECT__ */
-.endmacro
-
-/*
- *	void flush_mmu_tlb_entries_async(uint64_t, uint64_t)
- *
- *		Flush TLB entries, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_entries_async)
-LEXT(flush_mmu_tlb_entries_async)
-	FLUSH_MMU_TLB_ENTRIES
-	ret
-
-/*
- *	void flush_mmu_tlb_entries(uint64_t, uint64_t)
- *
- *		Flush TLB entries
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_entries)
-LEXT(flush_mmu_tlb_entries)
-	FLUSH_MMU_TLB_ENTRIES
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_MMU_TLB_ASID
-#if __ARM_KERNEL_PROTECT__
-	/*
-	 * If we are flushing ASID 0, this is a kernel operation.  With this
-	 * ASID scheme, this means we should flush all ASIDs.
-	 */
-	lsr		x1, x0, #TLBI_ASID_SHIFT
-	cmp		x1, #0
-	b.eq		1f // Lflush_mmu_tlb_globally
-
-	bic		x0, x0, #(1 << TLBI_ASID_SHIFT)
-	tlbi    aside1is, x0
-	orr		x0, x0, #(1 << TLBI_ASID_SHIFT)
-#endif /* __ARM_KERNEL_PROTECT__ */
-	tlbi    aside1is, x0
-#if __ARM_KERNEL_PROTECT__
-	b		2f // Lflush_mmu_tlb_asid_done
-1: // Lflush_mmu_tlb_globally:
-	tlbi    vmalle1is
-2: // Lflush_mmu_tlb_asid_done:
-#endif /* __ARM_KERNEL_PROTECT__ */
-.endmacro
-
-/*
- *	void flush_mmu_tlb_asid_async(uint64_t)
- *
- *		Flush TLB entriesfor requested asid, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_asid_async)
-LEXT(flush_mmu_tlb_asid_async)
-	FLUSH_MMU_TLB_ASID
-	ret
-
-/*
- *	void flush_mmu_tlb_asid(uint64_t)
- *
- *		Flush TLB entriesfor requested asid
- */
-	.text
-	.align 2
-	.globl EXT(flush_mmu_tlb_asid)
-LEXT(flush_mmu_tlb_asid)
-	FLUSH_MMU_TLB_ASID
-	SYNC_TLB_FLUSH
-	ret
-
-.macro FLUSH_CORE_TLB_ASID
-#if __ARM_KERNEL_PROTECT__
-	/*
-	 * If we are flushing ASID 0, this is a kernel operation.  With this
-	 * ASID scheme, this means we should flush all ASIDs.
-	 */
-	lsr		x1, x0, #TLBI_ASID_SHIFT
-	cmp		x1, #0
-	b.eq		1f // Lflush_core_tlb_asid_globally
-
-	bic		x0, x0, #(1 << TLBI_ASID_SHIFT)
-	tlbi	aside1, x0
-	orr		x0, x0, #(1 << TLBI_ASID_SHIFT)
-#endif /* __ARM_KERNEL_PROTECT__ */
-	tlbi	aside1, x0
-#if __ARM_KERNEL_PROTECT__
-	b		2f // Lflush_core_tlb_asid_done
-1: // Lflush_core_tlb_asid_globally:
-	tlbi	vmalle1
-2: // Lflush_core_tlb_asid_done:
-#endif /* __ARM_KERNEL_PROTECT__ */
-.endmacro
-
-/*
- *	void flush_core_tlb_asid_async(uint64_t)
- *
- *		Flush TLB entries for core for requested asid, don't wait for completion
- */
-	.text
-	.align 2
-	.globl EXT(flush_core_tlb_asid_async)
-LEXT(flush_core_tlb_asid_async)
-	FLUSH_CORE_TLB_ASID
-	ret
-/*
- *	void flush_core_tlb_asid(uint64_t)
- *
- *		Flush TLB entries for core for requested asid
- */
-	.text
-	.align 2
-	.globl EXT(flush_core_tlb_asid)
-LEXT(flush_core_tlb_asid)
-	FLUSH_CORE_TLB_ASID
-	SYNC_TLB_FLUSH
-	ret
-
 /*
  * 	Set MMU Translation Table Base Alternate
  */
@@ -507,12 +188,23 @@ LEXT(set_mmu_ttb_alternate)
 	bl		EXT(pinst_set_ttbr1)
 	mov		lr, x1
 #else
+#if defined(HAS_VMSA_LOCK)
+#if DEBUG || DEVELOPMENT
+	mrs		x1, ARM64_REG_VMSA_LOCK_EL1
+	and		x1, x1, #(VMSA_LOCK_TTBR1_EL1)
+	cbnz		x1, L_set_locked_reg_panic
+#endif /* DEBUG || DEVELOPMENT */
+#endif /* defined(HAS_VMSA_LOCK) */
 	msr		TTBR1_EL1, x0
 #endif /* defined(KERNEL_INTEGRITY_KTRR) */
 	isb		sy
 	ret
 
+#if XNU_MONITOR
+	.section __PPLTEXT,__text,regular,pure_instructions
+#else
 	.text
+#endif
 	.align 2
 	.globl EXT(set_mmu_ttb)
 LEXT(set_mmu_ttb)
@@ -525,6 +217,16 @@ LEXT(set_mmu_ttb)
 	isb		sy
 	ret
 
+
+#if XNU_MONITOR
+	.text
+	.align 2
+	.globl EXT(ml_get_ppl_cpu_data)
+LEXT(ml_get_ppl_cpu_data)
+	LOAD_PMAP_CPU_DATA x0, x1, x2
+	ret
+#endif
+
 /*
  * 	set AUX control register
  */
@@ -534,7 +236,6 @@ LEXT(set_mmu_ttb)
 LEXT(set_aux_control)
 	msr		ACTLR_EL1, x0
 	// Synchronize system
-	dsb		sy
 	isb		sy
 	ret
 
@@ -551,6 +252,23 @@ LEXT(set_vbar_el1)
 #endif
 #endif /* __ARM_KERNEL_PROTECT__ */
 
+#if defined(HAS_VMSA_LOCK)
+	.text
+	.align 2
+	.globl EXT(vmsa_lock)
+LEXT(vmsa_lock)
+	isb sy
+	mov x1, #(VMSA_LOCK_SCTLR_M_BIT)
+#if __ARM_MIXED_PAGE_SIZE__
+	mov x0, #(VMSA_LOCK_TTBR1_EL1 | VMSA_LOCK_VBAR_EL1)
+#else
+	mov x0, #(VMSA_LOCK_TTBR1_EL1 | VMSA_LOCK_TCR_EL1 | VMSA_LOCK_VBAR_EL1)
+#endif
+	orr x0, x0, x1
+	msr ARM64_REG_VMSA_LOCK_EL1, x0
+	isb sy
+	ret
+#endif /* defined(HAS_VMSA_LOCK) */
 
 /*
  *	set translation control register
@@ -560,20 +278,32 @@ LEXT(set_vbar_el1)
 	.globl EXT(set_tcr)
 LEXT(set_tcr)
 #if defined(APPLE_ARM64_ARCH_FAMILY)
+#if DEBUG || DEVELOPMENT
 	// Assert that T0Z is always equal to T1Z
 	eor		x1, x0, x0, lsr #(TCR_T1SZ_SHIFT - TCR_T0SZ_SHIFT)
 	and		x1, x1, #(TCR_TSZ_MASK << TCR_T0SZ_SHIFT)
 	cbnz	x1, L_set_tcr_panic
+#endif /* DEBUG || DEVELOPMENT */
+#endif /* defined(APPLE_ARM64_ARCH_FAMILY) */
 #if defined(KERNEL_INTEGRITY_KTRR)
 	mov		x1, lr
-	bl		_pinst_set_tcr
+	bl		EXT(pinst_set_tcr)
 	mov		lr, x1
 #else
+#if defined(HAS_VMSA_LOCK)
+#if DEBUG || DEVELOPMENT
+	// assert TCR unlocked
+	mrs 		x1, ARM64_REG_VMSA_LOCK_EL1
+	and		x1, x1, #(VMSA_LOCK_TCR_EL1)
+	cbnz		x1, L_set_locked_reg_panic
+#endif /* DEBUG || DEVELOPMENT */
+#endif /* defined(HAS_VMSA_LOCK) */
 	msr		TCR_EL1, x0
 #endif /* defined(KERNEL_INTRITY_KTRR) */
 	isb		sy
 	ret
 
+#if DEBUG || DEVELOPMENT
 L_set_tcr_panic:
 	PUSH_FRAME
 	sub		sp, sp, #16
@@ -595,17 +325,7 @@ L_set_tcr_panic_str:
 
 L_set_locked_reg_panic_str:
 	.asciz	"attempt to set locked register: (%llx)\n"
-#else
-#if defined(KERNEL_INTEGRITY_KTRR)
-	mov		x1, lr
-	bl		_pinst_set_tcr
-	mov		lr, x1
-#else
-	msr		TCR_EL1, x0
-#endif
-	isb		sy
-	ret
-#endif // defined(APPLE_ARM64_ARCH_FAMILY)
+#endif /* DEBUG || DEVELOPMENT */
 
 /*
  *	MMU kernel virtual to physical address translation
@@ -617,6 +337,7 @@ LEXT(mmu_kvtop)
 	mrs		x2, DAIF									// Load current DAIF
 	msr		DAIFSet, #(DAIFSC_IRQF | DAIFSC_FIQF)		// Disable IRQ
 	at		s1e1r, x0									// Translation Stage 1 EL1
+	isb		sy
 	mrs		x1, PAR_EL1									// Read result
 	msr		DAIF, x2									// Restore interrupt state
 	tbnz	x1, #0, L_mmu_kvtop_invalid					// Test Translation not valid
@@ -639,6 +360,7 @@ LEXT(mmu_uvtop)
 	mrs		x2, DAIF									// Load current DAIF
 	msr		DAIFSet, #(DAIFSC_IRQF | DAIFSC_FIQF)		// Disable IRQ
 	at		s1e0r, x0									// Translation Stage 1 EL0
+	isb		sy
 	mrs		x1, PAR_EL1									// Read result
 	msr		DAIF, x2									// Restore interrupt state
 	tbnz	x1, #0, L_mmu_uvtop_invalid					// Test Translation not valid
@@ -672,19 +394,32 @@ L_mmu_kvtop_wpreflight_invalid:
 /*
  * SET_RECOVERY_HANDLER
  *
- *	Sets up a page fault recovery handler
+ *	Sets up a page fault recovery handler.  This macro clobbers x16 and x17.
  *
- *	arg0 - persisted thread pointer
- *	arg1 - persisted recovery handler
- *	arg2 - scratch reg
- *	arg3 - recovery label
+ *	label - recovery label
+ *	tpidr - persisted thread pointer
+ *	old_handler - persisted recovery handler
+ *	label_in_adr_range - whether \label is within 1 MB of PC
  */
-.macro SET_RECOVERY_HANDLER
-	mrs		$0, TPIDR_EL1					// Load thread pointer
-	ldr		$1, [$0, TH_RECOVER]			// Save previous recovery handler
-	adrp	$2, $3@page						// Load the recovery handler address
-	add		$2, $2, $3@pageoff
-	str		$2, [$0, TH_RECOVER]			// Set new recovery handler
+.macro SET_RECOVERY_HANDLER	label, tpidr=x16, old_handler=x10, label_in_adr_range=0
+	// Note: x16 and x17 are designated for use as temporaries in
+	// interruptible PAC routines.  DO NOT CHANGE THESE REGISTER ASSIGNMENTS.
+.if \label_in_adr_range==1						// Load the recovery handler address
+	adr		x17, \label
+.else
+	adrp	x17, \label@page
+	add		x17, x17, \label@pageoff
+.endif
+#if defined(HAS_APPLE_PAC)
+	mrs		x16, TPIDR_EL1
+	add		x16, x16, TH_RECOVER
+	movk	x16, #PAC_DISCRIMINATOR_RECOVER, lsl 48
+	pacia	x17, x16							// Sign with IAKey + blended discriminator
+#endif
+
+	mrs		\tpidr, TPIDR_EL1					// Load thread pointer
+	ldr		\old_handler, [\tpidr, TH_RECOVER]	// Save previous recovery handler
+	str		x17, [\tpidr, TH_RECOVER]			// Set new signed recovery handler
 .endmacro
 
 /*
@@ -692,18 +427,18 @@ L_mmu_kvtop_wpreflight_invalid:
  *
  *	Clears page fault handler set by SET_RECOVERY_HANDLER
  *
- *	arg0 - thread pointer saved by SET_RECOVERY_HANDLER
- *	arg1 - old recovery handler saved by SET_RECOVERY_HANDLER
+ *	tpidr - thread pointer saved by SET_RECOVERY_HANDLER
+ *	old_handler - old recovery handler saved by SET_RECOVERY_HANDLER
  */
-.macro CLEAR_RECOVERY_HANDLER
-	str		$1, [$0, TH_RECOVER]		// Restore the previous recovery handler
+.macro CLEAR_RECOVERY_HANDLER	tpidr=x16, old_handler=x10
+	str		\old_handler, [\tpidr, TH_RECOVER]	// Restore the previous recovery handler
 .endmacro
 
 
 	.text
 	.align 2
 copyio_error:
-	CLEAR_RECOVERY_HANDLER x10, x11
+	CLEAR_RECOVERY_HANDLER
 	mov		x0, #EFAULT					// Return an EFAULT error
 	POP_FRAME
 	ARM64_STACK_EPILOG
@@ -717,7 +452,7 @@ copyio_error:
 LEXT(_bcopyin)
 	ARM64_STACK_PROLOG
 	PUSH_FRAME
-	SET_RECOVERY_HANDLER x10, x11, x3, copyio_error
+	SET_RECOVERY_HANDLER copyio_error
 	/* If len is less than 16 bytes, just do a bytewise copy */
 	cmp		x2, #16
 	b.lt	2f
@@ -737,40 +472,99 @@ LEXT(_bcopyin)
 	strb	w3, [x1], #1
 	b.hi	2b
 3:
-	CLEAR_RECOVERY_HANDLER x10, x11
+	CLEAR_RECOVERY_HANDLER
 	mov		x0, #0
 	POP_FRAME
 	ARM64_STACK_EPILOG
 
 /*
- * int _copyin_word(const char *src, uint64_t *dst, vm_size_t len)
+ * int _copyin_atomic32(const char *src, uint32_t *dst)
  */
 	.text
 	.align 2
-	.globl EXT(_copyin_word)
-LEXT(_copyin_word)
+	.globl EXT(_copyin_atomic32)
+LEXT(_copyin_atomic32)
 	ARM64_STACK_PROLOG
 	PUSH_FRAME
-	SET_RECOVERY_HANDLER x10, x11, x3, copyio_error
-	cmp		x2, #4
-	b.eq	L_copyin_word_4
-	cmp		x2, #8
-	b.eq	L_copyin_word_8
-	mov		x0, EINVAL
-	b		L_copying_exit
-L_copyin_word_4:
+	SET_RECOVERY_HANDLER copyio_error
 	ldr		w8, [x0]
-	b		L_copyin_word_store
-L_copyin_word_8:
-	ldr		x8, [x0]
-L_copyin_word_store:
-	str		x8, [x1]
+	str		w8, [x1]
 	mov		x0, #0
-	CLEAR_RECOVERY_HANDLER x10, x11
-L_copying_exit:
+	CLEAR_RECOVERY_HANDLER
 	POP_FRAME
 	ARM64_STACK_EPILOG
 
+/*
+ * int _copyin_atomic32_wait_if_equals(const char *src, uint32_t value)
+ */
+	.text
+	.align 2
+	.globl EXT(_copyin_atomic32_wait_if_equals)
+LEXT(_copyin_atomic32_wait_if_equals)
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	SET_RECOVERY_HANDLER copyio_error
+	ldxr		w8, [x0]
+	cmp		w8, w1
+	mov		x0, ESTALE
+	b.ne		1f
+	mov		x0, #0
+	wfe
+1:
+	clrex
+	CLEAR_RECOVERY_HANDLER
+	POP_FRAME
+	ARM64_STACK_EPILOG
+
+/*
+ * int _copyin_atomic64(const char *src, uint32_t *dst)
+ */
+	.text
+	.align 2
+	.globl EXT(_copyin_atomic64)
+LEXT(_copyin_atomic64)
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	SET_RECOVERY_HANDLER copyio_error
+	ldr		x8, [x0]
+	str		x8, [x1]
+	mov		x0, #0
+	CLEAR_RECOVERY_HANDLER
+	POP_FRAME
+	ARM64_STACK_EPILOG
+
+
+/*
+ * int _copyout_atomic32(uint32_t value, char *dst)
+ */
+	.text
+	.align 2
+	.globl EXT(_copyout_atomic32)
+LEXT(_copyout_atomic32)
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	SET_RECOVERY_HANDLER copyio_error
+	str		w0, [x1]
+	mov		x0, #0
+	CLEAR_RECOVERY_HANDLER
+	POP_FRAME
+	ARM64_STACK_EPILOG
+
+/*
+ * int _copyout_atomic64(uint64_t value, char *dst)
+ */
+	.text
+	.align 2
+	.globl EXT(_copyout_atomic64)
+LEXT(_copyout_atomic64)
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	SET_RECOVERY_HANDLER copyio_error
+	str		x0, [x1]
+	mov		x0, #0
+	CLEAR_RECOVERY_HANDLER
+	POP_FRAME
+	ARM64_STACK_EPILOG
 
 
 /*
@@ -782,7 +576,7 @@ L_copying_exit:
 LEXT(_bcopyout)
 	ARM64_STACK_PROLOG
 	PUSH_FRAME
-	SET_RECOVERY_HANDLER x10, x11, x3, copyio_error
+	SET_RECOVERY_HANDLER copyio_error
 	/* If len is less than 16 bytes, just do a bytewise copy */
 	cmp		x2, #16
 	b.lt	2f
@@ -802,7 +596,7 @@ LEXT(_bcopyout)
 	strb	w3, [x1], #1
 	b.hi	2b
 3:
-	CLEAR_RECOVERY_HANDLER x10, x11
+	CLEAR_RECOVERY_HANDLER
 	mov		x0, #0
 	POP_FRAME
 	ARM64_STACK_EPILOG
@@ -820,10 +614,7 @@ LEXT(_bcopyout)
 LEXT(_bcopyinstr)
 	ARM64_STACK_PROLOG
 	PUSH_FRAME
-	adr		x4, Lcopyinstr_error		// Get address for recover
-	mrs		x10, TPIDR_EL1				// Get thread pointer
-	ldr		x11, [x10, TH_RECOVER]		// Save previous recover
-	str		x4, [x10, TH_RECOVER]		// Store new recover
+	SET_RECOVERY_HANDLER Lcopyinstr_error, label_in_adr_range=1
 	mov		x4, #0						// x4 - total bytes copied
 Lcopyinstr_loop:
 	ldrb	w5, [x0], #1					// Load a byte from the user source
@@ -841,7 +632,7 @@ Lcopyinstr_done:
 Lcopyinstr_error:
 	mov		x0, #EFAULT					// Return EFAULT on error
 Lcopyinstr_exit:
-	str		x11, [x10, TH_RECOVER]		// Restore old recover
+	CLEAR_RECOVERY_HANDLER
 	POP_FRAME
 	ARM64_STACK_EPILOG
 
@@ -857,9 +648,9 @@ Lcopyinstr_exit:
  *	x3 : temp
  *	x5 : temp (kernel virtual base)
  *	x9 : temp
- *	x10 : thread pointer (set by SET_RECOVERY_HANDLER)
- *	x11 : old recovery function (set by SET_RECOVERY_HANDLER)
+ *	x10 : old recovery function (set by SET_RECOVERY_HANDLER)
  *	x12, x13 : backtrace data
+ *	x16 : thread pointer (set by SET_RECOVERY_HANDLER)
  *
  */
 	.text
@@ -868,7 +659,7 @@ Lcopyinstr_exit:
 LEXT(copyinframe)
 	ARM64_STACK_PROLOG
 	PUSH_FRAME
-	SET_RECOVERY_HANDLER x10, x11, x3, copyio_error
+	SET_RECOVERY_HANDLER copyio_error
 	cbnz	w2, Lcopyinframe64 		// Check frame size
 	adrp	x5, EXT(gVirtBase)@page // For 32-bit frame, make sure we're not trying to copy from kernel
 	add		x5, x5, EXT(gVirtBase)@pageoff
@@ -899,7 +690,7 @@ Lcopyinframe_valid:
 	mov 	w0, #0					// Success
 
 Lcopyinframe_done:
-	CLEAR_RECOVERY_HANDLER x10, x11
+	CLEAR_RECOVERY_HANDLER
 	POP_FRAME
 	ARM64_STACK_EPILOG
 
@@ -937,15 +728,26 @@ LEXT(arm_debug_set_cp14)
 LEXT(arm64_prepare_for_sleep)
 	PUSH_FRAME
 
-#if defined(APPLECYCLONE) || defined(APPLETYPHOON)
-	// <rdar://problem/15827409> CPU1 Stuck in WFIWT Because of MMU Prefetch
-	mrs		x0, ARM64_REG_HID2                              // Read HID2
-	orr		x0, x0, #(ARM64_REG_HID2_disMMUmtlbPrefetch)    // Set HID.DisableMTLBPrefetch
-	msr		ARM64_REG_HID2, x0                              // Write HID2
+#if defined(APPLETYPHOON)
+	// <rdar://problem/15827409>
+	HID_SET_BITS ARM64_REG_HID2, ARM64_REG_HID2_disMMUmtlbPrefetch, x9
 	dsb		sy
 	isb		sy
 #endif
 
+#if HAS_CLUSTER
+	cbnz		x0, 1f                                      // Skip if deep_sleep == true
+	// Mask FIQ and IRQ to avoid spurious wakeups
+	mrs		x9, ARM64_REG_CYC_OVRD
+	and		x9, x9, #(~(ARM64_REG_CYC_OVRD_irq_mask | ARM64_REG_CYC_OVRD_fiq_mask))
+	mov		x10, #(ARM64_REG_CYC_OVRD_irq_disable | ARM64_REG_CYC_OVRD_fiq_disable)
+	orr		x9, x9, x10
+	msr		ARM64_REG_CYC_OVRD, x9
+	isb
+1:
+#endif
+
+	cbz		x0, 1f                                          // Skip if deep_sleep == false
 #if __ARM_GLOBAL_SLEEP_BIT__
 	// Enable deep sleep
 	mrs		x1, ARM64_REG_ACC_OVRD
@@ -958,6 +760,9 @@ LEXT(arm64_prepare_for_sleep)
 	orr		x1, x1, #(  ARM64_REG_ACC_OVRD_ok2TrDnLnk_deepsleep)
 	and		x1, x1, #(~(ARM64_REG_ACC_OVRD_ok2PwrDnCPM_mask))
 	orr		x1, x1, #(  ARM64_REG_ACC_OVRD_ok2PwrDnCPM_deepsleep)
+#if HAS_RETENTION_STATE
+	orr		x1, x1, #(ARM64_REG_ACC_OVRD_disPioOnWfiCpu)
+#endif
 	msr		ARM64_REG_ACC_OVRD, x1
 
 
@@ -966,14 +771,19 @@ LEXT(arm64_prepare_for_sleep)
 	mov		x1, ARM64_REG_CYC_CFG_deepSleep
 	msr		ARM64_REG_CYC_CFG, x1
 #endif
-	// Set "OK to power down" (<rdar://problem/12390433>)
-	mrs		x0, ARM64_REG_CYC_OVRD
-	orr		x0, x0, #(ARM64_REG_CYC_OVRD_ok2pwrdn_force_down)
-	msr		ARM64_REG_CYC_OVRD, x0
 
-#if defined(APPLEMONSOON)
-	ARM64_IS_PCORE x0
-	cbz		x0, Lwfi_inst // skip if not p-core 
+1:
+	// Set "OK to power down" (<rdar://problem/12390433>)
+	mrs		x9, ARM64_REG_CYC_OVRD
+	orr		x9, x9, #(ARM64_REG_CYC_OVRD_ok2pwrdn_force_down)
+#if HAS_RETENTION_STATE
+	orr		x9, x9, #(ARM64_REG_CYC_OVRD_disWfiRetn)
+#endif
+	msr		ARM64_REG_CYC_OVRD, x9
+
+#if defined(APPLEMONSOON) || defined(APPLEVORTEX)
+	ARM64_IS_PCORE x9
+	cbz		x9, Lwfi_inst // skip if not p-core
 
 	/* <rdar://problem/32512947>: Flush the GUPS prefetcher prior to
 	 * wfi.  A Skye HW bug can cause the GUPS prefetcher on p-cores
@@ -985,14 +795,23 @@ LEXT(arm64_prepare_for_sleep)
 	 * and re-enabling GUPS, which forces the prefetch queue to
 	 * drain.  This should be done as close to wfi as possible, i.e.
 	 * at the very end of arm64_prepare_for_sleep(). */
-	mrs		x0, ARM64_REG_HID10
-	orr		x0, x0, #(ARM64_REG_HID10_DisHwpGups)
-	msr		ARM64_REG_HID10, x0
+#if defined(APPLEVORTEX)
+	/* <rdar://problem/32821461>: Cyprus A0/A1 parts have a similar
+	 * bug in the HSP prefetcher that can be worked around through
+	 * the same method mentioned above for Skye. */
+	mrs x9, MIDR_EL1
+	EXEC_COREALL_REVLO CPU_VERSION_B0, x9, x10
+#endif
+	mrs		x9, ARM64_REG_HID10
+	orr		x9, x9, #(ARM64_REG_HID10_DisHwpGups)
+	msr		ARM64_REG_HID10, x9
 	isb		sy
-	and		x0, x0, #(~(ARM64_REG_HID10_DisHwpGups))
-	msr		ARM64_REG_HID10, x0
+	and		x9, x9, #(~(ARM64_REG_HID10_DisHwpGups))
+	msr		ARM64_REG_HID10, x9
 	isb		sy
 #endif
+	EXEC_END
+
 Lwfi_inst:
 	dsb		sy
 	isb		sy
@@ -1018,20 +837,33 @@ LEXT(arm64_force_wfi_clock_gate)
 	ARM64_STACK_EPILOG
 
 
+#if HAS_RETENTION_STATE
+	.text
+	.align 2
+	.globl EXT(arm64_retention_wfi)
+LEXT(arm64_retention_wfi)
+	wfi
+	cbz		lr, Lwfi_retention	// If lr is 0, we entered retention state and lost all GPRs except sp and pc
+	ret					// Otherwise just return to cpu_idle()
+Lwfi_retention:
+	mov		x0, #1
+	bl		EXT(ClearIdlePop)
+	mov		x0, #0 
+	bl		EXT(cpu_idle_exit)	// cpu_idle_exit(from_reset = FALSE)
+	b		.			// cpu_idle_exit() should never return
+#endif
 
-#if defined(APPLECYCLONE) || defined(APPLETYPHOON)
+#if defined(APPLETYPHOON)
 
 	.text
 	.align 2
-	.globl EXT(cyclone_typhoon_prepare_for_wfi)
+	.globl EXT(typhoon_prepare_for_wfi)
 
-LEXT(cyclone_typhoon_prepare_for_wfi)
+LEXT(typhoon_prepare_for_wfi)
 	PUSH_FRAME
 
-	// <rdar://problem/15827409> CPU1 Stuck in WFIWT Because of MMU Prefetch
-	mrs		x0, ARM64_REG_HID2                              // Read HID2
-	orr		x0, x0, #(ARM64_REG_HID2_disMMUmtlbPrefetch)    // Set HID.DisableMTLBPrefetch
-	msr		ARM64_REG_HID2, x0                              // Write HID2
+	// <rdar://problem/15827409>
+	HID_SET_BITS ARM64_REG_HID2, ARM64_REG_HID2_disMMUmtlbPrefetch, x0
 	dsb		sy
 	isb		sy
 
@@ -1041,15 +873,12 @@ LEXT(cyclone_typhoon_prepare_for_wfi)
 
 	.text
 	.align 2
-	.globl EXT(cyclone_typhoon_return_from_wfi)
-LEXT(cyclone_typhoon_return_from_wfi)
+	.globl EXT(typhoon_return_from_wfi)
+LEXT(typhoon_return_from_wfi)
 	PUSH_FRAME
 
-	// <rdar://problem/15827409> CPU1 Stuck in WFIWT Because of MMU Prefetch
-	mrs		x0, ARM64_REG_HID2                              // Read HID2
-	mov		x1, #(ARM64_REG_HID2_disMMUmtlbPrefetch)        //
-	bic		x0, x0, x1                                      // Clear HID.DisableMTLBPrefetchMTLBPrefetch
-	msr		ARM64_REG_HID2, x0                              // Write HID2
+	// <rdar://problem/15827409>
+	HID_CLEAR_BITS ARM64_REG_HID2, ARM64_REG_HID2_disMMUmtlbPrefetch, x0
 	dsb		sy
 	isb		sy 
 
@@ -1199,9 +1028,9 @@ LEXT(arm64_replace_bootstack)
 	mrs		x4, DAIF					// Load current DAIF; use x4 as pinst may trash x1-x3
 	msr		DAIFSet, #(DAIFSC_IRQF | DAIFSC_FIQF | DAIFSC_ASYNCF)		// Disable IRQ/FIQ/serror
 	// Set SP_EL1 to exception stack
-#if defined(KERNEL_INTEGRITY_KTRR)
+#if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
 	mov		x1, lr
-	bl		_pinst_spsel_1
+	bl		EXT(pinst_spsel_1)
 	mov		lr, x1
 #else
 	msr		SPSel, #1
@@ -1230,5 +1059,184 @@ LEXT(monitor_call)
 	ret
 #endif
 
+#ifdef HAS_APPLE_PAC
+/*
+ * SIGN_THREAD_STATE
+ *
+ * Macro that signs thread state.
+ * $0 - Offset in arm_saved_state to store JOPHASH value.
+ */
+.macro SIGN_THREAD_STATE
+	pacga	x1, x1, x0		/* PC hash (gkey + &arm_saved_state) */
+	/*
+	 * Mask off the carry flag so we don't need to re-sign when that flag is
+	 * touched by the system call return path.
+	 */
+	bic		x2, x2, PSR_CF
+	pacga	x1, x2, x1		/* SPSR hash (gkey + pc hash) */
+	pacga	x1, x3, x1		/* LR Hash (gkey + spsr hash) */
+	pacga	x1, x4, x1		/* X16 hash (gkey + lr hash) */
+	pacga	x1, x5, x1		/* X17 hash (gkey + x16 hash) */
+	str		x1, [x0, $0]
+#if DEBUG || DEVELOPMENT
+	mrs		x1, DAIF
+	tbz		x1, #DAIF_IRQF_SHIFT, Lintr_enabled_panic
+#endif /* DEBUG || DEVELOPMENT */
+.endmacro
+
+/*
+ * CHECK_SIGNED_STATE
+ *
+ * Macro that checks signed thread state.
+ * $0 - Offset in arm_saved_state to to read the JOPHASH value from.
+ * $1 - Label to jump to when check is unsuccessful.
+ */
+.macro CHECK_SIGNED_STATE
+	pacga	x1, x1, x0		/* PC hash (gkey + &arm_saved_state) */
+	/*
+	 * Mask off the carry flag so we don't need to re-sign when that flag is
+	 * touched by the system call return path.
+	 */
+	bic		x2, x2, PSR_CF
+	pacga	x1, x2, x1		/* SPSR hash (gkey + pc hash) */
+	pacga	x1, x3, x1		/* LR Hash (gkey + spsr hash) */
+	pacga	x1, x4, x1		/* X16 hash (gkey + lr hash) */
+	pacga	x1, x5, x1		/* X17 hash (gkey + x16 hash) */
+	ldr		x2, [x0, $0]
+	cmp		x1, x2
+	b.ne	$1
+#if DEBUG || DEVELOPMENT
+	mrs		x1, DAIF
+	tbz		x1, #DAIF_IRQF_SHIFT, Lintr_enabled_panic
+#endif /* DEBUG || DEVELOPMENT */
+.endmacro
+
+/**
+ * void ml_sign_thread_state(arm_saved_state_t *ss, uint64_t pc,
+ *							 uint32_t cpsr, uint64_t lr, uint64_t x16,
+ *							 uint64_t x17)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_sign_thread_state)
+LEXT(ml_sign_thread_state)
+	SIGN_THREAD_STATE SS64_JOPHASH
+	ret
+
+/**
+ * void ml_sign_kernel_thread_state(arm_kernel_saved_state *ss, uint64_t pc,
+ *							 uint32_t cpsr, uint64_t lr, uint64_t x16,
+ *							 uint64_t x17)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_sign_kernel_thread_state)
+LEXT(ml_sign_kernel_thread_state)
+	SIGN_THREAD_STATE SS64_KERNEL_JOPHASH
+	ret
+
+/**
+ * void ml_check_signed_state(arm_saved_state_t *ss, uint64_t pc,
+ *							  uint32_t cpsr, uint64_t lr, uint64_t x16,
+ *							  uint64_t x17)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_check_signed_state)
+LEXT(ml_check_signed_state)
+	CHECK_SIGNED_STATE SS64_JOPHASH, Lcheck_hash_panic
+	ret
+Lcheck_hash_panic:
+	/*
+	 * ml_check_signed_state normally doesn't set up a stack frame, since it
+	 * needs to work in the face of attackers that can modify the stack.
+	 * However we lazily create one in the panic path: at this point we're
+	 * *only* using the stack frame for unwinding purposes, and without one
+	 * we'd be missing information about the caller.
+	 */
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	mov		x1, x0
+	adr		x0, Lcheck_hash_str
+	CALL_EXTERN panic_with_thread_kernel_state
+
+/**
+ * void ml_check_kernel_signed_state(arm_kernel_saved_state *ss, uint64_t pc,
+ *							  uint32_t cpsr, uint64_t lr, uint64_t x16,
+ *							  uint64_t x17)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_check_kernel_signed_state)
+LEXT(ml_check_kernel_signed_state)
+	CHECK_SIGNED_STATE SS64_KERNEL_JOPHASH, Lcheck_kernel_hash_panic
+	ret
+Lcheck_kernel_hash_panic:
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	adr		x0, Lcheck_hash_str
+	CALL_EXTERN panic
+
+Lcheck_hash_str:
+	.asciz "JOP Hash Mismatch Detected (PC, CPSR, or LR corruption)"
+
+#if DEBUG || DEVELOPMENT
+Lintr_enabled_panic:
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	adr		x0, Lintr_enabled_str
+	CALL_EXTERN panic
+Lintr_enabled_str:
+	/*
+	 * Please see the "Signing spilled register state" section of doc/pac.md
+	 * for an explanation of why this is bad and how it should be fixed.
+	 */
+	.asciz "Signed thread state manipulated with interrupts enabled"
+#endif /* DEBUG || DEVELOPMENT */
+
+/**
+ * void ml_auth_thread_state_invalid_cpsr(arm_saved_state_t *ss)
+ *
+ * Panics due to an invalid CPSR value in ss.
+ */
+	.text
+	.align 2
+	.globl EXT(ml_auth_thread_state_invalid_cpsr)
+LEXT(ml_auth_thread_state_invalid_cpsr)
+	ARM64_STACK_PROLOG
+	PUSH_FRAME
+	mov		x1, x0
+	adr		x0, Linvalid_cpsr_str
+	CALL_EXTERN panic_with_thread_kernel_state
+
+Linvalid_cpsr_str:
+	.asciz "Thread state corruption detected (PE mode == 0)"
+#endif /* HAS_APPLE_PAC */
+
+	.text
+	.align 2
+	.globl EXT(fill32_dczva)
+LEXT(fill32_dczva)
+0:
+	dc	zva, x0
+	add	x0, x0, #64
+	subs	x1, x1, #64
+	b.hi	0b
+	ret
+
+	.text
+	.align 2
+	.globl EXT(fill32_nt)
+LEXT(fill32_nt)
+	dup.4s	v0, w2
+0:
+	stnp	q0, q0, [x0]
+	stnp	q0, q0, [x0, #0x20]
+	stnp	q0, q0, [x0, #0x40]
+	stnp	q0, q0, [x0, #0x60]
+	add	x0, x0, #128
+	subs	x1, x1, #128
+	b.hi	0b
+	ret
 
 /* vim: set sw=4 ts=4: */

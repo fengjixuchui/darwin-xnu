@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2000-2019 Apple Inc. All rights reserved.
  */
 /*
  * file: pe_kprintf.c
@@ -14,37 +14,50 @@
 #include <libkern/section_keywords.h>
 
 /* Globals */
-void            (*PE_kputc) (char c) = 0;
+typedef void (*PE_kputc_t)(char);
+SECURITY_READ_ONLY_LATE(PE_kputc_t) PE_kputc;
 
-SECURITY_READ_ONLY_LATE(unsigned int)    disable_serial_output = TRUE;
+// disable_serial_output disables kprintf() *and* unbuffered panic output.
+// disable_kprintf_output only disables kprintf().
+SECURITY_READ_ONLY_LATE(unsigned int) disable_serial_output = TRUE;
+static SECURITY_READ_ONLY_LATE(unsigned int) disable_kprintf_output = TRUE;
 
-decl_simple_lock_data(static, kprintf_lock)
+static SIMPLE_LOCK_DECLARE(kprintf_lock, 0);
 
-void
-PE_init_kprintf(boolean_t vm_initialized)
+static void serial_putc_crlf(char c);
+
+__startup_func
+static void
+PE_init_kprintf(void)
 {
-	unsigned int    boot_arg;
-
-	if (PE_state.initialized == FALSE)
+	if (PE_state.initialized == FALSE) {
 		panic("Platform Expert not initialized");
+	}
 
-	if (!vm_initialized) {
-		simple_lock_init(&kprintf_lock, 0);
+	if (debug_boot_arg & DB_KPRT) {
+		disable_serial_output = FALSE;
+	}
 
-		if (PE_parse_boot_argn("debug", &boot_arg, sizeof (boot_arg)))
-			if (boot_arg & DB_KPRT)
-				disable_serial_output = FALSE;
+#if DEBUG
+	disable_kprintf_output = FALSE;
+#elif DEVELOPMENT
+	bool enable_kprintf_spam = false;
+	if (PE_parse_boot_argn("-enable_kprintf_spam", &enable_kprintf_spam, sizeof(enable_kprintf_spam))) {
+		disable_kprintf_output = FALSE;
+	}
+#endif
 
-		if (serial_init())
-			PE_kputc = serial_putc;
-		else
-			PE_kputc = cnputc;
+	if (serial_init()) {
+		PE_kputc = serial_putc_crlf;
+	} else {
+		PE_kputc = cnputc_unbuffered;
 	}
 }
+STARTUP(KPRINTF, STARTUP_RANK_FIRST, PE_init_kprintf);
 
 #ifdef MP_DEBUG
-static void 
-_kprintf(const char *format,...)
+static void
+_kprintf(const char *format, ...)
 {
 	va_list         listp;
 
@@ -52,10 +65,10 @@ _kprintf(const char *format,...)
 	_doprnt_log(format, &listp, PE_kputc, 16);
 	va_end(listp);
 }
-#define MP_DEBUG_KPRINTF(x...)	_kprintf(x)
-#else				/* MP_DEBUG */
+#define MP_DEBUG_KPRINTF(x...)  _kprintf(x)
+#else                           /* MP_DEBUG */
 #define MP_DEBUG_KPRINTF(x...)
-#endif				/* MP_DEBUG */
+#endif                          /* MP_DEBUG */
 
 #if CONFIG_NO_KPRINTF_STRINGS
 /* Prevent CPP from breaking the definition below */
@@ -64,23 +77,25 @@ _kprintf(const char *format,...)
 
 static int      cpu_last_locked = 0;
 
-__attribute__((noinline,not_tail_called))
-void kprintf(const char *fmt,...)
+__attribute__((noinline, not_tail_called))
+void
+kprintf(const char *fmt, ...)
 {
 	va_list         listp;
 	va_list         listp2;
 	boolean_t       state;
 	void           *caller = __builtin_return_address(0);
 
-	if (!disable_serial_output) {
-
+	if (!disable_serial_output && !disable_kprintf_output) {
+		va_start(listp, fmt);
+		va_copy(listp2, listp);
 		/*
 		 * Spin to get kprintf lock but re-enable interrupts while failing.
 		 * This allows interrupts to be handled while waiting but
 		 * interrupts are disabled once we have the lock.
 		 */
 		state = ml_set_interrupts_enabled(FALSE);
-		while (!simple_lock_try(&kprintf_lock)) {
+		while (!simple_lock_try(&kprintf_lock, LCK_GRP_NULL)) {
 			ml_set_interrupts_enabled(state);
 			ml_set_interrupts_enabled(FALSE);
 		}
@@ -90,10 +105,7 @@ void kprintf(const char *fmt,...)
 			cpu_last_locked = cpu_number();
 		}
 
-		va_start(listp, fmt);
-		va_copy(listp2, listp);
 		_doprnt_log(fmt, &listp, PE_kputc, 16);
-		va_end(listp);
 
 		simple_unlock(&kprintf_lock);
 
@@ -106,36 +118,39 @@ void kprintf(const char *fmt,...)
 		 * take the panic when it reenables interrupts.
 		 * Hopefully one day this is fixed so that this workaround is unnecessary.
 		 */
-		if (state == TRUE)
+		if (state == TRUE) {
 			ml_spin_debug_clear_self();
+		}
 #endif
 		ml_set_interrupts_enabled(state);
+		va_end(listp);
 
-		// If interrupts are enabled
-		if (ml_get_interrupts_enabled()) {
-			os_log_with_args(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, fmt, listp2, caller);
-		}
+		os_log_with_args(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, fmt, listp2, caller);
 		va_end(listp2);
-	}
-	else {
-		// If interrupts are enabled
-		if (ml_get_interrupts_enabled()) {
-			va_start(listp, fmt);
-			os_log_with_args(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, fmt, listp, caller);
-			va_end(listp);
-		}
+	} else {
+		va_start(listp, fmt);
+		os_log_with_args(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, fmt, listp, caller);
+		va_end(listp);
 	}
 }
 
-void 
+static void
+serial_putc_crlf(char c)
+{
+	if (c == '\n') {
+		uart_putc('\r');
+	}
+	uart_putc(c);
+}
+
+void
 serial_putc(char c)
 {
 	uart_putc(c);
 }
 
-int 
+int
 serial_getc(void)
 {
 	return uart_getc();
 }
-

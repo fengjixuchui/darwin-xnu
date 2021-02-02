@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000-2007 Apple Inc. All rights reserved.
+ * Copyright (c) 2000-2020 Apple Inc. All rights reserved.
  */
 /*
  *	Copyright (C) 1990,  NeXT, Inc.
@@ -10,14 +10,14 @@
  *	Machine-specific kernel routines.
  */
 
-#include	<sys/types.h>
-#include	<mach/machine.h>
-#include	<kern/cpu_number.h>
-#include	<machine/exec.h>
-#include	<pexpert/arm64/board_config.h>
+#include        <sys/types.h>
+#include        <mach/machine.h>
+#include        <kern/cpu_number.h>
+#include        <libkern/libkern.h>
+#include        <machine/exec.h>
+#include        <pexpert/arm64/board_config.h>
 
 #if __arm64__
-extern int bootarg_no64exec;	/* bsd_init.c */
 static cpu_subtype_t cpu_subtype32(void);
 #endif /* __arm64__ */
 
@@ -36,22 +36,48 @@ cpu_subtype32()
 		return 0;
 	}
 }
-#endif /* __arm64__*/
+
+static int
+grade_arm64e_binary(cpu_subtype_t execfeatures)
+{
+#if XNU_TARGET_OS_IOS
+	/*
+	 * iOS 13 toolchains produced unversioned arm64e slices which are not
+	 * ABI compatible with this release.
+	 */
+	if ((execfeatures & CPU_SUBTYPE_PTRAUTH_ABI) == 0) {
+#if DEBUG || DEVELOPMENT
+		printf("%s: arm64e prerelease ABI cannot be used with this kernel\n", __func__);
+#endif /* DEBUG || DEVELOPMENT */
+		return 0;
+	}
+#endif /* XNU_TARGET_OS_IOS */
+
+	/* The current ABI version is preferred over arm64 */
+	if (CPU_SUBTYPE_ARM64_PTR_AUTH_VERSION(execfeatures) ==
+	    CPU_SUBTYPE_ARM64_PTR_AUTH_CURRENT_VERSION) {
+		return 12;
+	}
+
+	/* Future ABIs are allowed, but exec_mach_imgact will treat it like an arm64 slice */
+	return 11;
+}
+#endif /* __arm64__ */
 
 /**********************************************************************
- * Routine:	grade_binary()
- *
- * Function:	Return a relative preference for exectypes and
- *		execsubtypes in fat executable files.  The higher the
- *		grade, the higher the preference.  A grade of 0 means
- *		not acceptable.
- **********************************************************************/
+* Routine:	grade_binary()
+*
+* Function:	Return a relative preference for exectypes and
+*		execsubtypes in fat executable files.  The higher the
+*		grade, the higher the preference.  A grade of 0 means
+*		not acceptable.
+**********************************************************************/
 int
-grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype)
+grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype, cpu_subtype_t execfeatures __unused, bool allow_simulator_binary __unused)
 {
 #if __arm64__
 	cpu_subtype_t hostsubtype =
-		(exectype & CPU_ARCH_ABI64) ? cpu_subtype() : cpu_subtype32();
+	    (exectype & CPU_ARCH_ABI64) ? cpu_subtype() : cpu_subtype32();
 #else
 	cpu_subtype_t hostsubtype = cpu_subtype();
 #endif /* __arm64__ */
@@ -59,8 +85,6 @@ grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype)
 	switch (exectype) {
 #if __arm64__
 	case CPU_TYPE_ARM64:
-		if (bootarg_no64exec) return 0;
-
 		switch (hostsubtype) {
 		case CPU_SUBTYPE_ARM64_V8:
 			switch (execsubtype) {
@@ -71,7 +95,17 @@ grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype)
 			}
 			break;
 
+		case CPU_SUBTYPE_ARM64E:
+			switch (execsubtype) {
+			case CPU_SUBTYPE_ARM64E:
+				return grade_arm64e_binary(execfeatures);
+			case CPU_SUBTYPE_ARM64_V8:
+				return 10;
+			case CPU_SUBTYPE_ARM64_ALL:
+				return 9;
+			}
 		} /* switch (hostsubtype) */
+		break;
 
 #else /* __arm64__ */
 
@@ -87,10 +121,10 @@ grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype)
 			}
 			goto v7s;
 
-		/*
-		 * For Swift and later, we prefer to run a swift slice, but fall back
-		 * to v7 as Cortex A9 errata should not apply
-		 */
+			/*
+			 * For Swift and later, we prefer to run a swift slice, but fall back
+			 * to v7 as Cortex A9 errata should not apply
+			 */
 v7s:
 		case CPU_SUBTYPE_ARM_V7S:
 			switch (execsubtype) {
@@ -107,7 +141,7 @@ v7s:
 			case CPU_SUBTYPE_ARM_V7K:
 				return 6;
 			}
-			break;	
+			break;
 
 		/*
 		 * For Cortex A9, we prefer the A9 slice, but will run v7 albeit
@@ -126,21 +160,21 @@ v7:
 			case CPU_SUBTYPE_ARM_V7:
 				return 5;
 			}
-			// fall through...
+		// fall through...
 
 		case CPU_SUBTYPE_ARM_V6:
 			switch (execsubtype) {
 			case CPU_SUBTYPE_ARM_V6:
 				return 4;
 			}
-			// fall through...
+		// fall through...
 
 		case CPU_SUBTYPE_ARM_V5TEJ:
 			switch (execsubtype) {
 			case CPU_SUBTYPE_ARM_V5TEJ:
 				return 3;
 			}
-			// fall through
+		// fall through
 
 		case CPU_SUBTYPE_ARM_V4T:
 			switch (execsubtype) {
@@ -168,23 +202,4 @@ v7:
 	}
 
 	return 0;
-}
-
-boolean_t
-pie_required(cpu_type_t exectype, cpu_subtype_t execsubtype)
-{
-	switch (exectype) {
-#if __arm64__
-	case CPU_TYPE_ARM64:
-		return TRUE;
-#endif /* __arm64__ */
-
-	case CPU_TYPE_ARM:
-		switch (execsubtype) {
-			case CPU_SUBTYPE_ARM_V7K:
-				return TRUE;
-			}
-		break;
-	}
-	return FALSE;
 }

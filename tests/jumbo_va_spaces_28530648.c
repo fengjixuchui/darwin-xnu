@@ -7,6 +7,7 @@
 #include <darwintest.h>
 #include <darwintest_utils.h>
 
+T_GLOBAL_META(T_META_RUN_CONCURRENTLY(true));
 
 #define GB (1ULL * 1024 * 1024 * 1024)
 
@@ -14,11 +15,13 @@
  * This test expects the entitlement to be the enabling factor for a process to
  * allocate at least this many GB of VA space. i.e. with the entitlement, n GB
  * must be allocatable; whereas without it, it must be less.
+ * This value was determined experimentally to fit on applicable devices and to
+ * be clearly distinguishable from the default VA limit.
  */
-#define ALLOC_TEST_GB 54
+#define ALLOC_TEST_GB 53
 
-T_DECL(jumbo_va_spaces_28530648,
-	"Verify that the \"dynamic-codesigning\" entitlement is required to utilize an extra-large "
+T_DECL(TESTNAME,
+	"Verify that a required entitlement is present in order to be granted an extra-large "
 	"VA space on arm64",
 	T_META_NAMESPACE("xnu.vm"),
 	T_META_CHECK_LEAKS(false))

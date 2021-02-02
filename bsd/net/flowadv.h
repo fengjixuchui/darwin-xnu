@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2017 Apple Inc. All rights reserved.
+ * Copyright (c) 2012-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -27,26 +27,26 @@
  */
 
 #ifndef _NET_FLOWADV_H_
-#define	_NET_FLOWADV_H_
+#define _NET_FLOWADV_H_
 
 #ifdef KERNEL_PRIVATE
 #include <sys/types.h>
 #include <sys/queue.h>
 
 
-#define	FADV_SUCCESS		0	/* success */
-#define	FADV_FLOW_CONTROLLED	1	/* regular flow control */
-#define	FADV_SUSPENDED		2	/* flow control due to suspension */
+#define FADV_SUCCESS            0       /* success */
+#define FADV_FLOW_CONTROLLED    1       /* regular flow control */
+#define FADV_SUSPENDED          2       /* flow control due to suspension */
 
 struct flowadv {
-	int32_t		code;		/* FADV advisory code */
+	int32_t         code;           /* FADV advisory code */
 };
 
 #ifdef BSD_KERNEL_PRIVATE
 struct flowadv_fcentry {
 	STAILQ_ENTRY(flowadv_fcentry) fce_link;
-	u_int32_t	fce_flowsrc_type;	/* FLOWSRC values */
-	u_int32_t	fce_flowid;
+	u_int32_t       fce_flowsrc_type;       /* FLOWSRC values */
+	u_int32_t       fce_flowid;
 };
 
 STAILQ_HEAD(flowadv_fclist, flowadv_fcentry);
@@ -58,6 +58,7 @@ extern struct flowadv_fcentry *flowadv_alloc_entry(int);
 extern void flowadv_free_entry(struct flowadv_fcentry *);
 extern void flowadv_add(struct flowadv_fclist *);
 extern void flowadv_add_entry(struct flowadv_fcentry *);
+extern void flowadv_reap_caches(boolean_t);
 
 __END_DECLS
 

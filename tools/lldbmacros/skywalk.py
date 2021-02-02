@@ -6,6 +6,7 @@
 from xnu import *
 from utils import *
 from string import *
+from net import *
 
 import xnudefines
 
@@ -25,7 +26,7 @@ def IterateProcChannels(proc):
     count = 0
     while count <= proc_lastfile:
         if unsigned(proc_ofiles[count]) != 0:
-            proc_fd_fglob = proc_ofiles[count].f_fglob
+            proc_fd_fglob = proc_ofiles[count].fp_glob
             if (unsigned(proc_fd_fglob.fg_ops.fo_type) == 10):
                 yield Cast(proc_fd_fglob.fg_data, 'kern_channel *')
         count += 1
@@ -74,8 +75,8 @@ def GetKernChannelSummary(kc):
         u=GetUUIDSummary(kc.ch_info.cinfo_ch_id))
 
 @lldb_type_summary(['__kern_channel_ring *'])
-@header('{:<20s} {:<65s} {:>10s} | {:<5s} {:<5s} | {:<5s} {:<5s} {:<5s} | {:<5s} {:<5s} {:<5s}'.format(
-        'kernchannelring', 'name', 'flags', 'kc', 'kt', 'rc', 'rh', 'rt', 'c', 'h', 't'))
+@header('{:<20s} {:<65s} {:>10s} | {:<5s} {:<5s} | {:<5s} {:<5s} | {:<5s} {:<5s}'.format(
+        'kernchannelring', 'name', 'flags', 'kh', 'kt', 'rh', 'rt', 'h', 't'))
 def GetKernChannelRingSummary(kring):
     """ Summarizes a __kern_channel_ring and related information
 
@@ -455,7 +456,7 @@ def IterateProcNECP(proc):
     count = 0
     while count <= proc_lastfile:
         if unsigned(proc_ofiles[count]) != 0:
-            proc_fd_fglob = proc_ofiles[count].f_fglob
+            proc_fd_fglob = proc_ofiles[count].fp_glob
             if (unsigned(proc_fd_fglob.fg_ops.fo_type) == 9):
                 yield Cast(proc_fd_fglob.fg_data, 'necp_fd_data *')
         count += 1
@@ -564,3 +565,164 @@ def ShowProcNECP(cmd_args=None):
     print GetNECPSummary.header
     for kc in IterateProcNECP(proc):
         print GetNECPSummary(kc)
+
+def NexusTypePtr(nx):
+    if nx.nx_prov.nxprov_params.nxp_type == GetEnumValue("nexus_type_t::NEXUS_TYPE_FLOW_SWITCH"):
+        return "(struct nx_flowswitch *){:18s}".format(hex(nx.nx_arg))
+    elif nx.nx_prov.nxprov_params.nxp_type == GetEnumValue("nexus_type_t::NEXUS_TYPE_NET_IF"):
+        return "     (struct nx_netif *){:18s}".format(hex(nx.nx_arg))
+    elif nx.nx_prov.nxprov_params.nxp_type == GetEnumValue("nexus_type_t::NEXUS_TYPE_USER_PIPE"):
+        return "     (struct nx_upipe *){:18s}".format(hex(nx.nx_arg))
+    elif nx.nx_prov.nxprov_params.nxp_type == GetEnumValue("nexus_type_t::NEXUS_TYPE_KERNEL_PIPE"):
+        return "   (struct kern_nexus *){:18s}".format(hex(nx))
+    else:
+        return "unknown"
+
+def GetStructNexusSummary(nx):
+    nexus_summary_string = ""
+    nexus_summary_string += "{0:s} ".format(NexusTypePtr(nx))
+    nexus_summary_string += "{0:30s} ".format(str(Cast(addressof(nx.nx_prov.nxprov_params.nxp_name), 'char *')))
+    nexus_summary_string += "rings: tx {:2d} rx {:2d} slots: {:4d} rx {:4d} bufsize {:5d} metasize {:5d} mhints {:2d} ".format(
+            nx.nx_prov.nxprov_params.nxp_tx_rings,
+            nx.nx_prov.nxprov_params.nxp_rx_rings,
+            nx.nx_prov.nxprov_params.nxp_rx_slots,
+            nx.nx_prov.nxprov_params.nxp_tx_slots,
+            nx.nx_prov.nxprov_params.nxp_buf_size,
+            nx.nx_prov.nxprov_params.nxp_meta_size,
+            nx.nx_prov.nxprov_params.nxp_mhints)
+
+    return nexus_summary_string
+
+@lldb_command('shownexuses')
+def ShowNexuses(cmd_args=None):
+    """ Show Nexus.
+
+        usage: shownexues
+    """
+    nexus_summaries = []
+    nexuses = kern.globals.nx_head
+    for nx in IterateRBTreeEntry(nexuses, 'struct kern_nexus*', 'nx_link'):
+        nexus_summaries.append(GetStructNexusSummary(nx))
+    nexus_summaries.sort()
+    for nx_str in nexus_summaries:
+        print "{0:s}".format(nx_str)
+
+def GetSockAddr4(in_addr):
+    return inet_ntoa(struct.pack("!I", in_addr.sin_addr))
+
+def GetSockAddr6(in6_addr):
+    addr = in6_addr.__u6_addr.__u6_addr8
+    addr_raw_string = ":".join(["{0:02x}{0:02x}".format(unsigned(addr[i]),
+        unsigned(addr[i+1])) for i in range(0, 16, 2)])
+    return inet_ntop(AF_INET6, inet_pton(AF_INET6, addr_raw_string))
+
+def FlowKeyStr(fk):
+    if fk.fk_ipver == 0x4:
+        src_str = GetSockAddr4(fk.fk_src._v4)
+        dst_str = GetSockAddr4(fk.fk_dst._v4)
+    elif fk.fk_ipver == 0x60:
+        src_str = GetSockAddr6(fk.fk_src._v6)
+        dst_str = GetSockAddr6(fk.fk_dst._v6)
+    else:
+        return "unkown ipver"
+
+    return "src={},dst={},proto={},sport={},dport={}".format(src_str, dst_str,
+            unsigned(fk.fk_proto), ntohs(fk.fk_sport), ntohs(fk.fk_dport))
+
+def FlowEntryStr(fe):
+    return "(struct flow_entry*){} {} ".format(hex(fe), FlowKeyStr(fe.fe_key))
+
+def GetFlowEntryPid(fe):
+    return fe.fe_pid
+
+def GetFlowswitchFlowEntries(fsw):
+    fm = kern.GetValueFromAddress(unsigned(fsw.fsw_flow_mgr), 'struct flow_mgr *')
+    cht = kern.GetValueFromAddress(unsigned(fm.fm_flow_table), 'struct cuckoo_hashtable *')
+
+    flows = []
+    def GetCuckooNodeAsFLowEntry(node, hashValue):
+            fe = containerof(node, 'struct flow_entry', 'fe_cnode')
+            flows.append(fe)
+
+    CuckooHashtableForeach(cht, GetCuckooNodeAsFLowEntry)
+    return flows
+
+def IsNexusAFlowswitch(nx):
+    return nx.nx_prov.nxprov_params.nxp_type == GetEnumValue('nexus_type_t::NEXUS_TYPE_FLOW_SWITCH')
+
+def GetNexusAsFlowswitch(nx):
+    return kern.GetValueFromAddress(unsigned(nx.nx_arg), 'struct nx_flowswitch *')
+
+def FlowswitchStr(fsw):
+    return "{}:\n(struct nx_flowswitch *){}".format(str(fsw.fsw_ifp.if_xname), hex(fsw))
+
+@lldb_command('showflowswitches')
+def ShowFlowswitches(cmd_args=None):
+    """ Show flow switches
+
+        usage: showflowswitches [ifname]
+    """
+    ifname = ""
+    if len(cmd_args) == 1:
+        ifname = cmd_args[0]
+
+    nexuses = kern.globals.nx_head
+    for nx in IterateRBTreeEntry(nexuses, 'struct kern_nexus*', 'nx_link'):
+        if not IsNexusAFlowswitch(nx):
+            continue
+        fsw = GetNexusAsFlowswitch(nx)
+        if ifname not in str(fsw.fsw_ifp.if_xname):
+            continue
+        print "{}".format(FlowswitchStr(fsw))
+        flows = GetFlowswitchFlowEntries(fsw)
+        flows.sort(key=GetFlowEntryPid)
+        for fe in flows:
+            print "    {}".format(FlowEntryStr(fe))
+
+def CuckooHashtableForeachSlot(cht, slotHandler):
+    for i in range(0, cht._n_buckets):
+        b = cht._buckets[i]
+        if unsigned(b._inuse) == 0:
+            continue
+        for j in range(0, kern.globals._CHT_BUCKET_SLOTS):
+            s = b._slots[j]
+            if unsigned(s._node) != 0:
+                slotHandler(s)
+
+def CuckooHashtableForeach(cht, handler):
+    def CuckooHashtableSlotHandler(s):
+        if unsigned(s._node) == 0:
+            return
+        node = s._node
+        while unsigned(node) != 0:
+            handler(node, s._hash)
+            node = node.next
+    CuckooHashtableForeachSlot(cht, CuckooHashtableSlotHandler)
+
+@lldb_command('showcuckoohashtable')
+def ShowCuckooHashtable(cmd_args=None):
+    """ Show Cuckoo Hashtable.
+
+        usage: showcuckoohashtable <struct cuckoo_hashtable *>
+    """
+    if not cmd_args:
+        raise ArgumentError('missing struct cuckoo_hashtable * argument')
+
+    cht = kern.GetValueFromAddress(cmd_args[0], 'struct cuckoo_hashtable *')
+
+    print "(struct cuckoo_hashtable *){:18s} capacity {:d} entries {:d}".format(hex(cht), cht._capacity, cht._n_entries)
+    def CuckooHashtablePrintNode(node, hashValue):
+        print "  node {} hash 0x{:08x}".format(hex(node), int(hashValue))
+
+    CuckooHashtableForeach(cht, CuckooHashtablePrintNode)
+
+@lldb_command('showprotons')
+def ShowProtoNS(cmd_args=None):
+    """ Show the protons table
+    """
+
+    protons_tokens = kern.globals.protons_tokens
+    for pt in IterateRBTreeEntry(protons_tokens, 'struct protons_token *', 'pt_link'):
+        print "(struct protons_token *){} protocol {:3} pid {:5} epid {:5} ref {:2} flags {}".format(
+                hex(pt), int(pt.pt_protocol), int(pt.pt_pid), int(pt.pt_epid),
+                int(pt.pt_refcnt.ref_count), hex(pt.pt_flags))

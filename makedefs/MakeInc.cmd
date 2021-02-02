@@ -1,6 +1,6 @@
 # -*- mode: makefile;-*-
 #
-# Copyright (C) 1999-2016 Apple Inc. All rights reserved.
+# Copyright (C) 1999-2020 Apple Inc. All rights reserved.
 #
 # MakeInc.cmd contains command paths for use during
 # the build, as well as make fragments and text
@@ -10,29 +10,106 @@
 #
 # Commands for the build environment
 #
-##
-# Verbosity
-##
+
+#
+# Build Logging and Verbosity
+#
+
 ifeq ($(RC_XBS),YES)
-VERBOSE = YES
+	VERBOSE = YES
 else
-VERBOSE = NO
+	VERBOSE = NO
 endif
+
+ECHO = echo
+
+ERR = $(ECHO) > /dev/stderr
+PRINTF = printf
+
+QUIET ?= 0
+ifneq ($(QUIET),0)
+	PRINTF = printf > /dev/null
+	ifeq ($(VERBOSE),YES)
+		override VERBOSE = NO
+	endif
+endif
+
+# Helper functions for logging operations.
+LOG_PFX_LEN = 15
+LOG_PFX_LEN_ADJ = $(LOG_PFX_LEN)
+LOG = $(PRINTF) "$2%$4s$(Color0) $3%s$(Color0)\n" "$1"
+
+CONCISE ?= 0
+ifneq ($(CONCISE),0)
+	# Concise logging puts all logs on the same line (CSI K to clear and
+	# carriage return).
+	LOG = $(PRINTF) "$2%$4s$(Color0) $3%s$(Color0)\033[K\r" "$1"
+endif
+
+_LOG_COMP = $(call LOG,$1,$(ColorC),$(ColorF),$(LOG_PFX_LEN_ADJ))
+_LOG_HOST = $(call LOG,$1,$(ColorH),$(ColorF),$(LOG_PFX_LEN))
+_LOG_HOST_LINK = $(call LOG,$1,$(ColorH),$(ColorLF),$(LOG_PFX_LEN))
+
+# Special operations.
+LOG_LDFILELIST = $(call LOG,LDFILELIST,$(ColorL),$(ColorLF),$(LOG_PFX_LEN_ADJ))
+LOG_MIG = $(call LOG,MIG,$(ColorM),$(ColorF),$(LOG_PFX_LEN_ADJ))
+LOG_LD = $(call LOG,LD,$(ColorL),$(ColorF),$(LOG_PFX_LEN_ADJ))
+LOG_ALIGN = $(call LOG,--------->,$(Color0),$(Color0),$(LOG_PFX_LEN))
+
+# Compiling/machine-specific operations.
+LOG_CC = $(call _LOG_COMP,CC)
+LOG_CXX = $(call _LOG_COMP,C++)
+LOG_AS = $(call _LOG_COMP,AS)
+LOG_LTO = $(call _LOG_COMP,LTO)
+LOG_SYMBOLSET = $(call _LOG_COMP,SYMSET)
+LOG_SYMBOLSETPLIST = $(call _LOG_COMP,SYMSETPLIST)
+
+# Host-side operations.
+LOG_IIG = $(call _LOG_HOST,IIG)
+LOG_HOST_CC = $(call _LOG_HOST,CC)
+LOG_HOST_LD = $(call _LOG_HOST,LD)
+LOG_HOST_CODESIGN = $(call _LOG_HOST,CODESIGN)
+LOG_HOST_BISON = $(call _LOG_HOST,BISON)
+LOG_HOST_FLEX = $(call _LOG_HOST,FLEX)
+LOG_INSTALL = $(call _LOG_HOST,INSTALL)
+LOG_INSTALLSYM = $(call _LOG_HOST,INSTALLSYM)
+LOG_INSTALLHDR = $(call _LOG_HOST,INSTALLHDR)
+LOG_INSTALLMACROS = $(call _LOG_HOST,INSTALLMACROS)
+LOG_INSTALLPY = $(call _LOG_HOST,INSTALLPY)
+LOG_MAN = $(call _LOG_HOST,MAN)
+LOG_MANLINK = $(call _LOG_HOST,MANLINK)
+LOG_ALIAS = $(call _LOG_HOST,ALIAS)
+LOG_STRIP = $(call _LOG_HOST,STRIP)
+LOG_DSYMUTIL = $(call _LOG_HOST,DSYMUTIL)
+LOG_LIBTOOL = $(call _LOG_HOST,LIBTOOL)
+LOG_FILEPREP = $(call _LOG_HOST,FILEPREP)
+
+# Host-side linking operations.
+LOG_GENASSYM = $(call _LOG_HOST_LINK,GENASSYM)
+LOG_GENERATE= $(call _LOG_HOST_LINK,GENERATE)
+LOG_CTFCONVERT = $(call _LOG_HOST_LINK,CTFCONVERT)
+LOG_CTFMERGE = $(call _LOG_HOST_LINK,CTFMERGE)
+LOG_CTFINSERT = $(call _LOG_HOST_LINK,CTFINSERT)
+LOG_DSYMUTIL = $(call _LOG_HOST_LINK,DSYMUTIL)
+LOG_SUPPORTED_KPI = $(call _LOG_HOST_LINK,SUPPORTED_KPI)
+
 ifeq ($(VERBOSE),YES)
-_v =
-_vstdout =
+	_v =
+	_vstdout =
+	_vstderr =
+	XCRUN = /usr/bin/xcrun -verbose
 else
-_v = @
-_vstdout = > /dev/null
+	_v = @
+	_vstdout = > /dev/null
+	_vstderr = 2&> /dev/null
+	XCRUN = /usr/bin/xcrun
 endif
 
 VERBOSE_GENERATED_MAKE_FRAGMENTS = NO
 
-ifeq ($(VERBOSE),YES)
-	XCRUN = /usr/bin/xcrun -verbose
-else
-	XCRUN = /usr/bin/xcrun
-endif
+#
+# Defaults
+#
 
 SDKROOT ?= macosx
 HOST_SDKROOT ?= macosx
@@ -66,6 +143,15 @@ ifeq ($(PLATFORM),)
 	endif
 endif
 
+ifeq ($(PLATFORM),MacOSX)
+	ifeq (DriverKit,$(shell echo $(SDKROOT_RESOLVED) | sed 's,^.*/\([^/1-9]*\)[1-9][^/]*\.sdk$$,\1,'))
+		export PLATFORM := DriverKit
+		export DRIVERKIT ?= 1
+		export DRIVERKITROOT ?= /System/DriverKit
+		export DRIVERKITRUNTIMEROOT = $(DRIVERKITROOT)/Runtime
+	endif
+endif
+
 ifeq ($(SDKVERSION),)
      export SDKVERSION := $(shell $(XCRUN) -sdk $(SDKROOT) -show-sdk-version)
 endif
@@ -87,6 +173,9 @@ endif
 ifeq ($(MIGCC),)
 	export MIGCC := $(CC)
 endif
+ifeq ($(IIG),)
+	export IIG := $(shell $(XCRUN) -sdk $(SDKROOT) -find iig)
+endif
 ifeq ($(STRIP),)
 	export STRIP := $(shell $(XCRUN) -sdk $(SDKROOT) -find strip)
 endif
@@ -95,6 +184,9 @@ ifeq ($(LIPO),)
 endif
 ifeq ($(LIBTOOL),)
 	export LIBTOOL := $(shell $(XCRUN) -sdk $(SDKROOT) -find libtool)
+endif
+ifeq ($(OTOOL),)
+	export OTOOL := $(shell $(XCRUN) -sdk $(SDKROOT) -find otool)
 endif
 ifeq ($(NM),)
 	export NM := $(shell $(XCRUN) -sdk $(SDKROOT) -find nm)
@@ -123,15 +215,10 @@ endif
 #
 SUPPORTED_EMBEDDED_PLATFORMS := iPhoneOS iPhoneOSNano tvOS AppleTVOS WatchOS BridgeOS
 SUPPORTED_SIMULATOR_PLATFORMS := iPhoneSimulator iPhoneNanoSimulator tvSimulator AppleTVSimulator WatchSimulator
-SUPPORTED_PLATFORMS := MacOSX $(SUPPORTED_SIMULATOR_PLATFORMS) $(SUPPORTED_EMBEDDED_PLATFORMS)
+SUPPORTED_PLATFORMS := MacOSX DriverKit $(SUPPORTED_SIMULATOR_PLATFORMS) $(SUPPORTED_EMBEDDED_PLATFORMS)
 
 # Platform-specific tools
-ifneq ($(filter $(SUPPORTED_EMBEDDED_PLATFORMS),$(PLATFORM)),)
-ifeq ($(EMBEDDED_DEVICE_MAP),)
-	export EMBEDDED_DEVICE_MAP := $(shell $(XCRUN) -sdk $(SDKROOT) -find embedded_device_map)
-endif
 EDM_DBPATH ?= $(PLATFORMPATH)/usr/local/standalone/firmware/device_map.db
-endif
 
 # Scripts or tools we build ourselves
 #
@@ -170,7 +257,6 @@ TOUCH = /usr/bin/touch
 SLEEP = /bin/sleep
 AWK = /usr/bin/awk
 SED = /usr/bin/sed
-ECHO = /bin/echo
 PLUTIL = /usr/bin/plutil
 
 #

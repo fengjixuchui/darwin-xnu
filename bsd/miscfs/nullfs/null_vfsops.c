@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Apple Inc. All rights reserved.
+ * Copyright (c) 2019 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -70,6 +70,7 @@
 #include <sys/vnode.h>
 #include <sys/vnode_internal.h>
 #include <security/mac_internal.h>
+#include <sys/kauth.h>
 
 #include <sys/param.h>
 
@@ -110,7 +111,9 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 	struct vnode *lowerrootvp = NULL, *vp = NULL;
 	struct vfsstatfs * sp   = NULL;
 	struct null_mount * xmp = NULL;
-	char data[MAXPATHLEN];
+	struct null_mount_conf conf = {0};
+	char path[MAXPATHLEN];
+
 	size_t count;
 	struct vfs_attr vfa;
 	/* set defaults (arbitrary since this file system is readonly) */
@@ -127,8 +130,9 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 
 	NULLFSDEBUG("nullfs_mount(mp = %p) %llx\n", (void *)mp, vfs_flags(mp));
 
-	if (vfs_flags(mp) & MNT_ROOTFS)
-		return (EOPNOTSUPP);
+	if (vfs_flags(mp) & MNT_ROOTFS) {
+		return EOPNOTSUPP;
+	}
 
 	/*
 	 * Update is a no-op
@@ -143,9 +147,18 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 	}
 
 	/*
+	 * Get configuration
+	 */
+	error = copyin(user_data, &conf, sizeof(conf));
+	if (error) {
+		NULLFSDEBUG("nullfs: error copying configuration form user %d\n", error);
+		goto error;
+	}
+
+	/*
 	 * Get argument
 	 */
-	error = copyinstr(user_data, data, MAXPATHLEN - 1, &count);
+	error = copyinstr(user_data + sizeof(conf), path, MAXPATHLEN - 1, &count);
 	if (error) {
 		NULLFSDEBUG("nullfs: error copying data form user %d\n", error);
 		goto error;
@@ -155,35 +168,40 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 	 * 64 bit */
 	if (count > MAX_MNT_FROM_LENGTH) {
 		error = EINVAL;
-		NULLFSDEBUG("nullfs: path to translocate too large for this system %d vs %d\n", count, MAX_MNT_FROM_LENGTH);
+		NULLFSDEBUG("nullfs: path to translocate too large for this system %ld vs %ld\n", count, MAX_MNT_FROM_LENGTH);
 		goto error;
 	}
 
-	error = vnode_lookup(data, 0, &lowerrootvp, ctx);
+	error = vnode_lookup(path, 0, &lowerrootvp, ctx);
 	if (error) {
-		NULLFSDEBUG("lookup %s -> %d\n", data, error);
+		NULLFSDEBUG("lookup %s -> %d\n", path, error);
 		goto error;
 	}
 
 	/* lowervrootvp has an iocount after vnode_lookup, drop that for a usecount.
-	   Keep this to signal what we want to keep around the thing we are mirroring.
-	   Drop it in unmount.*/
+	 *  Keep this to signal what we want to keep around the thing we are mirroring.
+	 *  Drop it in unmount.*/
 	error = vnode_ref(lowerrootvp);
 	vnode_put(lowerrootvp);
-	if (error)
-	{
+	if (error) {
 		// If vnode_ref failed, then null it out so it can't be used anymore in cleanup.
 		lowerrootvp = NULL;
 		goto error;
 	}
 
-	NULLFSDEBUG("mount %s\n", data);
+	NULLFSDEBUG("mount %s\n", path);
 
 	MALLOC(xmp, struct null_mount *, sizeof(*xmp), M_TEMP, M_WAITOK | M_ZERO);
 	if (xmp == NULL) {
 		error = ENOMEM;
 		goto error;
 	}
+
+	/*
+	 * Grab the uid/gid of the caller, which may be used for unveil later
+	 */
+	xmp->uid = kauth_cred_getuid(cred);
+	xmp->gid = kauth_cred_getgid(cred);
 
 	/*
 	 * Save reference to underlying FS
@@ -211,7 +229,7 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 	xmp->nullm_rootvp = vp;
 
 	/* read the flags the user set, but then ignore some of them, we will only
-	   allow them if they are set on the lower file system */
+	 *  allow them if they are set on the lower file system */
 	uint64_t flags      = vfs_flags(mp) & (~(MNT_IGNORE_OWNERSHIP | MNT_LOCAL));
 	uint64_t lowerflags = vfs_flags(vnode_mount(lowerrootvp)) & (MNT_LOCAL | MNT_QUARANTINE | MNT_IGNORE_OWNERSHIP | MNT_NOEXEC);
 
@@ -229,11 +247,14 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 
 	/* fill in the stat block */
 	sp = vfs_statfs(mp);
-	strlcpy(sp->f_mntfromname, data, MAX_MNT_FROM_LENGTH);
+	strlcpy(sp->f_mntfromname, path, MAX_MNT_FROM_LENGTH);
 
 	sp->f_flags = flags;
 
 	xmp->nullm_flags = NULLM_CASEINSENSITIVE; /* default to case insensitive */
+
+	// Set the flags that are requested
+	xmp->nullm_flags |= conf.flags & NULLM_UNVEIL;
 
 	error = nullfs_vfs_getlowerattr(vnode_mount(lowerrootvp), &vfa, ctx);
 	if (error == 0) {
@@ -285,7 +306,7 @@ nullfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
 	MAC_PERFORM(mount_label_associate, cred, vnode_mount(lowerrootvp), vfs_mntlabel(mp));
 
 	NULLFSDEBUG("nullfs_mount: lower %s, alias at %s\n", sp->f_mntfromname, sp->f_mntonname);
-	return (0);
+	return 0;
 
 error:
 	if (xmp) {
@@ -321,7 +342,7 @@ nullfs_unmount(struct mount * mp, int mntflags, __unused vfs_context_t ctx)
 
 	/* check entitlement or superuser*/
 	if (!IOTaskHasEntitlement(current_task(), NULLFS_ENTITLEMENT) &&
-		vfs_context_suser(ctx) != 0) {
+	    vfs_context_suser(ctx) != 0) {
 		return EPERM;
 	}
 
@@ -339,14 +360,12 @@ nullfs_unmount(struct mount * mp, int mntflags, __unused vfs_context_t ctx)
 	vnode_getalways(vp);
 
 	error = vflush(mp, vp, flags);
-	if (error)
-	{
+	if (error) {
 		vnode_put(vp);
-		return (error);
+		return error;
 	}
 
-	if (vnode_isinuse(vp,1) && flags == 0)
-	{
+	if (vnode_isinuse(vp, 1) && flags == 0) {
 		vnode_put(vp);
 		return EBUSY;
 	}
@@ -376,7 +395,7 @@ nullfs_unmount(struct mount * mp, int mntflags, __unused vfs_context_t ctx)
 	uint64_t vflags = vfs_flags(mp);
 	vfs_setflags(mp, vflags & ~MNT_LOCAL);
 
-	return (0);
+	return 0;
 }
 
 static int
@@ -393,8 +412,9 @@ nullfs_root(struct mount * mp, struct vnode ** vpp, __unused vfs_context_t ctx)
 	vp = MOUNTTONULLMOUNT(mp)->nullm_rootvp;
 
 	error = vnode_get(vp);
-	if (error)
+	if (error) {
 		return error;
+	}
 
 	*vpp = vp;
 	return 0;
@@ -408,8 +428,9 @@ nullfs_vfs_getattr(struct mount * mp, struct vfs_attr * vfap, vfs_context_t ctx)
 	struct null_mount * null_mp = MOUNTTONULLMOUNT(mp);
 	vol_capabilities_attr_t capabilities;
 	struct vfsstatfs * sp = vfs_statfs(mp);
+	vfs_context_t ectx = nullfs_get_patched_context(null_mp, ctx);
 
-	struct timespec tzero = {0, 0};
+	struct timespec tzero = {.tv_sec = 0, .tv_nsec = 0};
 
 	NULLFSDEBUG("%s\n", __FUNCTION__);
 
@@ -418,7 +439,7 @@ nullfs_vfs_getattr(struct mount * mp, struct vfs_attr * vfap, vfs_context_t ctx)
 	capabilities.capabilities[VOL_CAPABILITIES_FORMAT] = VOL_CAP_FMT_FAST_STATFS | VOL_CAP_FMT_HIDDEN_FILES;
 	capabilities.valid[VOL_CAPABILITIES_FORMAT]        = VOL_CAP_FMT_FAST_STATFS | VOL_CAP_FMT_HIDDEN_FILES;
 
-	if (nullfs_vfs_getlowerattr(vnode_mount(null_mp->nullm_lowerrootvp), &vfa, ctx) == 0) {
+	if (nullfs_vfs_getlowerattr(vnode_mount(null_mp->nullm_lowerrootvp), &vfa, ectx) == 0) {
 		if (VFSATTR_IS_SUPPORTED(&vfa, f_capabilities)) {
 			memcpy(&capabilities, &vfa.f_capabilities, sizeof(capabilities));
 			/* don't support vget */
@@ -436,48 +457,61 @@ nullfs_vfs_getattr(struct mount * mp, struct vfs_attr * vfap, vfs_context_t ctx)
 
 			capabilities.valid[VOL_CAPABILITIES_INTERFACES] &=
 			    ~(VOL_CAP_INT_SEARCHFS | VOL_CAP_INT_ATTRLIST | VOL_CAP_INT_READDIRATTR | VOL_CAP_INT_EXCHANGEDATA |
-			      VOL_CAP_INT_COPYFILE | VOL_CAP_INT_ALLOCATE | VOL_CAP_INT_VOL_RENAME | VOL_CAP_INT_ADVLOCK | VOL_CAP_INT_FLOCK);
+			    VOL_CAP_INT_COPYFILE | VOL_CAP_INT_ALLOCATE | VOL_CAP_INT_VOL_RENAME | VOL_CAP_INT_ADVLOCK | VOL_CAP_INT_FLOCK);
 		}
 	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_create_time))
+	if (VFSATTR_IS_ACTIVE(vfap, f_create_time)) {
 		VFSATTR_RETURN(vfap, f_create_time, tzero);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_modify_time))
+	if (VFSATTR_IS_ACTIVE(vfap, f_modify_time)) {
 		VFSATTR_RETURN(vfap, f_modify_time, tzero);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_access_time))
+	if (VFSATTR_IS_ACTIVE(vfap, f_access_time)) {
 		VFSATTR_RETURN(vfap, f_access_time, tzero);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_bsize))
+	if (VFSATTR_IS_ACTIVE(vfap, f_bsize)) {
 		VFSATTR_RETURN(vfap, f_bsize, sp->f_bsize);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_iosize))
+	if (VFSATTR_IS_ACTIVE(vfap, f_iosize)) {
 		VFSATTR_RETURN(vfap, f_iosize, sp->f_iosize);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_owner))
+	if (VFSATTR_IS_ACTIVE(vfap, f_owner)) {
 		VFSATTR_RETURN(vfap, f_owner, 0);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_blocks))
+	if (VFSATTR_IS_ACTIVE(vfap, f_blocks)) {
 		VFSATTR_RETURN(vfap, f_blocks, sp->f_blocks);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_bfree))
+	if (VFSATTR_IS_ACTIVE(vfap, f_bfree)) {
 		VFSATTR_RETURN(vfap, f_bfree, sp->f_bfree);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_bavail))
+	if (VFSATTR_IS_ACTIVE(vfap, f_bavail)) {
 		VFSATTR_RETURN(vfap, f_bavail, sp->f_bavail);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_bused))
+	if (VFSATTR_IS_ACTIVE(vfap, f_bused)) {
 		VFSATTR_RETURN(vfap, f_bused, sp->f_bused);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_files))
+	if (VFSATTR_IS_ACTIVE(vfap, f_files)) {
 		VFSATTR_RETURN(vfap, f_files, sp->f_files);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_ffree))
+	if (VFSATTR_IS_ACTIVE(vfap, f_ffree)) {
 		VFSATTR_RETURN(vfap, f_ffree, sp->f_ffree);
+	}
 
-	if (VFSATTR_IS_ACTIVE(vfap, f_fssubtype))
+	if (VFSATTR_IS_ACTIVE(vfap, f_fssubtype)) {
 		VFSATTR_RETURN(vfap, f_fssubtype, 0);
+	}
 
 	if (VFSATTR_IS_ACTIVE(vfap, f_capabilities)) {
 		memcpy(&vfap->f_capabilities, &capabilities, sizeof(vol_capabilities_attr_t));
@@ -516,6 +550,8 @@ nullfs_vfs_getattr(struct mount * mp, struct vfs_attr * vfap, vfs_context_t ctx)
 		}
 	}
 
+	nullfs_cleanup_patched_context(null_mp, ectx);
+
 	return 0;
 }
 
@@ -525,7 +561,7 @@ nullfs_sync(__unused struct mount * mp, __unused int waitfor, __unused vfs_conte
 	/*
 	 * XXX - Assumes no data cached at null layer.
 	 */
-	return (0);
+	return 0;
 }
 
 
@@ -537,21 +573,20 @@ nullfs_vfs_start(__unused struct mount * mp, __unused int flags, __unused vfs_co
 	return 0;
 }
 
-extern struct vnodeopv_desc nullfs_vnodeop_opv_desc;
+extern const struct vnodeopv_desc nullfs_vnodeop_opv_desc;
 
-struct vnodeopv_desc * nullfs_vnodeopv_descs[] = {
-    &nullfs_vnodeop_opv_desc,
+const struct vnodeopv_desc * nullfs_vnodeopv_descs[] = {
+	&nullfs_vnodeop_opv_desc,
 };
 
 struct vfsops nullfs_vfsops = {
-    .vfs_mount              = nullfs_mount,
-    .vfs_unmount            = nullfs_unmount,
-    .vfs_start              = nullfs_vfs_start,
-    .vfs_root               = nullfs_root,
-    .vfs_getattr            = nullfs_vfs_getattr,
-    .vfs_sync               = nullfs_sync,
-    .vfs_init               = nullfs_init,
-    .vfs_sysctl             = NULL,
-    .vfs_setattr            = NULL,
+	.vfs_mount              = nullfs_mount,
+	.vfs_unmount            = nullfs_unmount,
+	.vfs_start              = nullfs_vfs_start,
+	.vfs_root               = nullfs_root,
+	.vfs_getattr            = nullfs_vfs_getattr,
+	.vfs_sync               = nullfs_sync,
+	.vfs_init               = nullfs_init,
+	.vfs_sysctl             = NULL,
+	.vfs_setattr            = NULL,
 };
-

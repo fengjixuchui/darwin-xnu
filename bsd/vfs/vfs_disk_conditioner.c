@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2016-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -53,12 +53,12 @@
 #define DISK_IDLE_SEC (10 * 60)
 
 struct saved_mount_fields {
-	uint32_t	mnt_maxreadcnt;		/* Max. byte count for read */
-	uint32_t	mnt_maxwritecnt;	/* Max. byte count for write */
-	uint32_t	mnt_segreadcnt;		/* Max. segment count for read */
-	uint32_t	mnt_segwritecnt;	/* Max. segment count for write */
-	uint32_t	mnt_ioqueue_depth;	/* the maxiumum number of commands a device can accept */
-	uint32_t	mnt_ioscale;		/* scale the various throttles/limits imposed on the amount of I/O in flight */
+	uint32_t        mnt_maxreadcnt;         /* Max. byte count for read */
+	uint32_t        mnt_maxwritecnt;        /* Max. byte count for write */
+	uint32_t        mnt_segreadcnt;         /* Max. segment count for read */
+	uint32_t        mnt_segwritecnt;        /* Max. segment count for write */
+	uint32_t        mnt_ioqueue_depth;      /* the maxiumum number of commands a device can accept */
+	uint32_t        mnt_ioscale;            /* scale the various throttles/limits imposed on the amount of I/O in flight */
 };
 
 struct _disk_conditioner_info_t {
@@ -124,9 +124,19 @@ disk_conditioner_delay(buf_t bp, int extents, int total_size, uint64_t already_e
 	}
 
 	// scale access time by (distance in blocks from previous I/O / maximum blocks)
-	access_time_scale = weighted_scale_factor((double)blkdiff / BLK_MAX(mp));
+	access_time_scale = weighted_scale_factor((double)blkdiff / (double)BLK_MAX(mp));
+	if (__builtin_isnan(access_time_scale)) {
+		return;
+	}
 	// most cases should pass in extents==1 for optimal delay calculation, otherwise just multiply delay by extents
-	delay_usec = (uint64_t)(((uint64_t)extents * info->access_time_usec) * access_time_scale);
+	double temp = (((double)extents * (double)info->access_time_usec) * access_time_scale);
+	if (temp <= 0) {
+		delay_usec = 0;
+	} else if (temp >= (double)(18446744073709549568ULL)) { /* highest 64-bit unsigned integer representable as a double */
+		delay_usec = UINT64_MAX;
+	} else {
+		delay_usec = (uint64_t)temp;
+	}
 
 	if (info->read_throughput_mbps && (bp->b_flags & B_READ)) {
 		delay_usec += (uint64_t)(total_size / ((double)(info->read_throughput_mbps * 1024 * 1024 / 8) / USEC_PER_SEC));
@@ -153,7 +163,8 @@ disk_conditioner_delay(buf_t bp, int extents, int total_size, uint64_t already_e
 
 	while (delay_usec) {
 		microuptime(&start);
-		delay(delay_usec);
+		assert(delay_usec <= INT_MAX);
+		delay((int)delay_usec);
 		microuptime(&elapsed);
 		timevalsub(&elapsed, &start);
 		if (elapsed.tv_sec * USEC_PER_SEC < delay_usec) {
@@ -190,7 +201,8 @@ disk_conditioner_get_info(mount_t mp, disk_conditioner_info *uinfo)
 }
 
 static inline void
-disk_conditioner_restore_mount_fields(mount_t mp, struct saved_mount_fields *mnt_fields) {
+disk_conditioner_restore_mount_fields(mount_t mp, struct saved_mount_fields *mnt_fields)
+{
 	mp->mnt_maxreadcnt = mnt_fields->mnt_maxreadcnt;
 	mp->mnt_maxwritecnt = mnt_fields->mnt_maxwritecnt;
 	mp->mnt_segreadcnt = mnt_fields->mnt_segreadcnt;
@@ -218,8 +230,9 @@ disk_conditioner_set_info(mount_t mp, disk_conditioner_info *uinfo)
 
 	internal_info = mp->mnt_disk_conditioner_info;
 	if (!internal_info) {
-		internal_info = mp->mnt_disk_conditioner_info = kalloc(sizeof(struct _disk_conditioner_info_t));
+		internal_info = kalloc(sizeof(struct _disk_conditioner_info_t));
 		bzero(internal_info, sizeof(struct _disk_conditioner_info_t));
+		mp->mnt_disk_conditioner_info = internal_info;
 		mnt_fields = &(internal_info->mnt_fields);
 
 		/* save mount_t fields for restoration later */
@@ -299,7 +312,10 @@ disk_conditioner_mount_is_ssd(mount_t mp)
 	struct _disk_conditioner_info_t *internal_info = mp->mnt_disk_conditioner_info;
 
 	if (!internal_info || !internal_info->dcinfo.enabled) {
-		return !!(mp->mnt_kern_flag & MNTK_SSD);
+		if (mp->mnt_kern_flag & MNTK_SSD) {
+			return TRUE;
+		}
+		return FALSE;
 	}
 
 	return internal_info->dcinfo.is_ssd;

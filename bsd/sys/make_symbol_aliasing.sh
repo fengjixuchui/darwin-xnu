@@ -34,8 +34,10 @@ fi
 SDKROOT="$1"
 OUTPUT="$2"
 
-if [ ! -x "${SDKROOT}/usr/local/libexec/availability.pl" ] ; then
-    echo "Unable to locate ${SDKROOT}/usr/local/libexec/availability.pl (or not executable)" >&2
+AVAILABILITY_PL="${SDKROOT}/${DRIVERKITROOT}/usr/local/libexec/availability.pl"
+
+if [ ! -x "${AVAILABILITY_PL}" ] ; then
+    echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
     exit 1
 fi
 	    
@@ -74,20 +76,25 @@ cat <<EOF
 
 EOF
 
-for ver in $(${SDKROOT}/usr/local/libexec/availability.pl --ios) ; do
-    ver_major=${ver%.*}
-    ver_minor=${ver#*.}
-    value=$(printf "%d%02d00" ${ver_major} ${ver_minor})
-    str=$(printf "__IPHONE_%d_%d" ${ver_major} ${ver_minor})
-    echo "#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ >= ${value}"
-    echo "#define __DARWIN_ALIAS_STARTING_IPHONE_${str}(x) x"
-    echo "#else"
-    echo "#define __DARWIN_ALIAS_STARTING_IPHONE_${str}(x)"
-    echo "#endif"
-    echo ""
+for ver in $(${AVAILABILITY_PL} --ios) ; do
+    set -- $(echo "$ver" | tr '.' ' ')
+    ver_major=$1
+    ver_minor=$2
+    ver_rel=$3
+    if [ -z "$ver_rel" ]; then
+	    # don't produce these defines for releases with tertiary release numbers
+        value=$(printf "%d%02d00" ${ver_major} ${ver_minor})
+        str=$(printf "__IPHONE_%d_%d" ${ver_major} ${ver_minor})
+        echo "#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ >= ${value}"
+        echo "#define __DARWIN_ALIAS_STARTING_IPHONE_${str}(x) x"
+        echo "#else"
+        echo "#define __DARWIN_ALIAS_STARTING_IPHONE_${str}(x)"
+        echo "#endif"
+        echo ""
+    fi
 done
 
-for ver in $(${SDKROOT}/usr/local/libexec/availability.pl --macosx) ; do
+for ver in $(${AVAILABILITY_PL} --macosx) ; do
     set -- $(echo "$ver" | tr '.' ' ')
     ver_major=$1
     ver_minor=$2

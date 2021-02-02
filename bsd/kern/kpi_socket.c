@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2017 Apple Inc. All rights reserved.
+ * Copyright (c) 2003-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -26,7 +26,7 @@
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
-#define	__KPI__
+#define __KPI__
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/types.h>
@@ -49,8 +49,8 @@
 #include <libkern/OSAtomic.h>
 #include <stdbool.h>
 
-static errno_t sock_send_internal(socket_t, const struct msghdr	*,
-    mbuf_t, int, size_t	*);
+static errno_t sock_send_internal(socket_t, const struct msghdr *,
+    mbuf_t, int, size_t *);
 
 #undef sock_accept
 #undef sock_socket
@@ -73,28 +73,29 @@ sock_accept_common(socket_t sock, struct sockaddr *from, int fromlen, int flags,
 	struct socket *new_so;
 	lck_mtx_t *mutex_held;
 	int dosocklock;
-	errno_t	error = 0;
+	errno_t error = 0;
 
-	if (sock == NULL || new_sock == NULL)
-		return (EINVAL);
+	if (sock == NULL || new_sock == NULL) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
 	if ((sock->so_options & SO_ACCEPTCONN) == 0) {
 		socket_unlock(sock, 1);
-		return (EINVAL);
+		return EINVAL;
 	}
 	if ((flags & ~(MSG_DONTWAIT)) != 0) {
 		socket_unlock(sock, 1);
-		return (ENOTSUP);
+		return ENOTSUP;
 	}
 check_again:
 	if (((flags & MSG_DONTWAIT) != 0 || (sock->so_state & SS_NBIO) != 0) &&
 	    sock->so_comp.tqh_first == NULL) {
 		socket_unlock(sock, 1);
-		return (EWOULDBLOCK);
+		return EWOULDBLOCK;
 	}
 
-	if (sock->so_proto->pr_getlock != NULL)  {
+	if (sock->so_proto->pr_getlock != NULL) {
 		mutex_held = (*sock->so_proto->pr_getlock)(sock, PR_F_WILLUNLOCK);
 		dosocklock = 1;
 	} else {
@@ -111,14 +112,14 @@ check_again:
 		    PSOCK | PCATCH, "sock_accept", NULL);
 		if (error != 0) {
 			socket_unlock(sock, 1);
-			return (error);
+			return error;
 		}
 	}
 	if (sock->so_error != 0) {
 		error = sock->so_error;
 		sock->so_error = 0;
 		socket_unlock(sock, 1);
-		return (error);
+		return error;
 	}
 
 	so_acquire_accept_list(sock, NULL);
@@ -158,12 +159,12 @@ check_again:
 		if ((error = soacceptfilter(new_so, sock)) != 0) {
 			/* Drop reference on listening socket */
 			sodereference(sock);
-			return (error);
+			return error;
 		}
 		socket_lock(sock, 0);
 	}
 
-	if (dosocklock)	{
+	if (dosocklock) {
 		LCK_MTX_ASSERT(new_so->so_proto->pr_getlock(new_so, 0),
 		    LCK_MTX_ASSERT_NOTOWNED);
 		socket_lock(new_so, 1);
@@ -171,24 +172,26 @@ check_again:
 
 	(void) soacceptlock(new_so, &sa, 0);
 
-	socket_unlock(sock, 1);	/* release the head */
+	socket_unlock(sock, 1); /* release the head */
 
 	/* see comments in sock_setupcall() */
 	if (callback != NULL) {
-#if CONFIG_EMBEDDED
+#if (defined(__arm__) || defined(__arm64__))
 		sock_setupcalls_locked(new_so, callback, cookie, callback, cookie, 0);
-#else
+#else /* (defined(__arm__) || defined(__arm64__)) */
 		sock_setupcalls_locked(new_so, callback, cookie, NULL, NULL, 0);
-#endif /* !CONFIG_EMBEDDED */
+#endif /* (defined(__arm__) || defined(__arm64__)) */
 	}
 
 	if (sa != NULL && from != NULL) {
-		if (fromlen > sa->sa_len)
+		if (fromlen > sa->sa_len) {
 			fromlen = sa->sa_len;
+		}
 		memcpy(from, sa, fromlen);
 	}
-	if (sa != NULL)
+	if (sa != NULL) {
 		FREE(sa, M_SONAME);
+	}
 
 	/*
 	 * If the socket has been marked as inactive by sosetdefunct(),
@@ -199,25 +202,26 @@ check_again:
 		    SHUTDOWN_SOCKET_LEVEL_DISCONNECT_INTERNAL);
 	}
 	*new_sock = new_so;
-	if (dosocklock)
+	if (dosocklock) {
 		socket_unlock(new_so, 1);
-	return (error);
+	}
+	return error;
 }
 
 errno_t
 sock_accept(socket_t sock, struct sockaddr *from, int fromlen, int flags,
     sock_upcall callback, void *cookie, socket_t *new_sock)
 {
-	return (sock_accept_common(sock, from, fromlen, flags,
-	    callback, cookie, new_sock, false));
+	return sock_accept_common(sock, from, fromlen, flags,
+	           callback, cookie, new_sock, false);
 }
 
 errno_t
 sock_accept_internal(socket_t sock, struct sockaddr *from, int fromlen, int flags,
     sock_upcall callback, void *cookie, socket_t *new_sock)
 {
-	return (sock_accept_common(sock, from, fromlen, flags,
-	    callback, cookie, new_sock, true));
+	return sock_accept_common(sock, from, fromlen, flags,
+	           callback, cookie, new_sock, true);
 }
 
 errno_t
@@ -228,25 +232,28 @@ sock_bind(socket_t sock, const struct sockaddr *to)
 	struct sockaddr_storage ss;
 	boolean_t want_free = TRUE;
 
-	if (sock == NULL || to == NULL)
-		return (EINVAL);
+	if (sock == NULL || to == NULL) {
+		return EINVAL;
+	}
 
-	if (to->sa_len > sizeof (ss)) {
+	if (to->sa_len > sizeof(ss)) {
 		MALLOC(sa, struct sockaddr *, to->sa_len, M_SONAME, M_WAITOK);
-		if (sa == NULL)
-			return (ENOBUFS);
+		if (sa == NULL) {
+			return ENOBUFS;
+		}
 	} else {
 		sa = (struct sockaddr *)&ss;
 		want_free = FALSE;
 	}
 	memcpy(sa, to, to->sa_len);
 
-	error = sobindlock(sock, sa, 1);	/* will lock socket */
+	error = sobindlock(sock, sa, 1);        /* will lock socket */
 
-	if (sa != NULL && want_free == TRUE)
+	if (sa != NULL && want_free == TRUE) {
 		FREE(sa, M_SONAME);
+	}
 
-	return (error);
+	return error;
 }
 
 errno_t
@@ -258,14 +265,16 @@ sock_connect(socket_t sock, const struct sockaddr *to, int flags)
 	struct sockaddr_storage ss;
 	boolean_t want_free = TRUE;
 
-	if (sock == NULL || to == NULL)
-		return (EINVAL);
+	if (sock == NULL || to == NULL) {
+		return EINVAL;
+	}
 
-	if (to->sa_len > sizeof (ss)) {
+	if (to->sa_len > sizeof(ss)) {
 		MALLOC(sa, struct sockaddr *, to->sa_len, M_SONAME,
 		    (flags & MSG_DONTWAIT) ? M_NOWAIT : M_WAITOK);
-		if (sa == NULL)
-			return (ENOBUFS);
+		if (sa == NULL) {
+			return ENOBUFS;
+		}
 	} else {
 		sa = (struct sockaddr *)&ss;
 		want_free = FALSE;
@@ -288,17 +297,19 @@ sock_connect(socket_t sock, const struct sockaddr *to, int flags)
 			goto out;
 		}
 
-		if (sock->so_proto->pr_getlock != NULL)
+		if (sock->so_proto->pr_getlock != NULL) {
 			mutex_held = (*sock->so_proto->pr_getlock)(sock, PR_F_WILLUNLOCK);
-		else
+		} else {
 			mutex_held = sock->so_proto->pr_domain->dom_mtx;
+		}
 
 		while ((sock->so_state & SS_ISCONNECTING) &&
 		    sock->so_error == 0) {
 			error = msleep((caddr_t)&sock->so_timeo,
 			    mutex_held, PSOCK | PCATCH, "sock_connect", NULL);
-			if (error != 0)
+			if (error != 0) {
 				break;
+			}
 		}
 
 		if (error == 0) {
@@ -311,17 +322,18 @@ sock_connect(socket_t sock, const struct sockaddr *to, int flags)
 out:
 	socket_unlock(sock, 1);
 
-	if (sa != NULL && want_free == TRUE)
+	if (sa != NULL && want_free == TRUE) {
 		FREE(sa, M_SONAME);
+	}
 
-	return (error);
+	return error;
 }
 
 errno_t
 sock_connectwait(socket_t sock, const struct timeval *tv)
 {
 	lck_mtx_t *mutex_held;
-	errno_t	retval = 0;
+	errno_t retval = 0;
 	struct timespec ts;
 
 	socket_lock(sock, 1);
@@ -332,10 +344,11 @@ sock_connectwait(socket_t sock, const struct timeval *tv)
 			retval = sock->so_error;
 			sock->so_error = 0;
 		} else {
-			if ((sock->so_state & SS_ISCONNECTED) != 0)
+			if ((sock->so_state & SS_ISCONNECTED) != 0) {
 				retval = 0;
-			else
+			} else {
 				retval = EINVAL;
+			}
 		}
 		goto done;
 	}
@@ -349,15 +362,16 @@ sock_connectwait(socket_t sock, const struct timeval *tv)
 
 	ts.tv_sec = tv->tv_sec;
 	ts.tv_nsec = (tv->tv_usec * (integer_t)NSEC_PER_USEC);
-	if ((ts.tv_sec + (ts.tv_nsec/(long)NSEC_PER_SEC))/100  >  SHRT_MAX)  {
+	if ((ts.tv_sec + (ts.tv_nsec / (long)NSEC_PER_SEC)) / 100 > SHRT_MAX) {
 		retval = EDOM;
 		goto done;
 	}
 
-	if (sock->so_proto->pr_getlock != NULL)
+	if (sock->so_proto->pr_getlock != NULL) {
 		mutex_held = (*sock->so_proto->pr_getlock)(sock, PR_F_WILLUNLOCK);
-	else
+	} else {
 		mutex_held = sock->so_proto->pr_domain->dom_mtx;
+	}
 
 	msleep((caddr_t)&sock->so_timeo, mutex_held,
 	    PSOCK, "sock_connectwait", &ts);
@@ -375,7 +389,7 @@ sock_connectwait(socket_t sock, const struct timeval *tv)
 
 done:
 	socket_unlock(sock, 1);
-	return (retval);
+	return retval;
 }
 
 errno_t
@@ -384,62 +398,66 @@ sock_nointerrupt(socket_t sock, int on)
 	socket_lock(sock, 1);
 
 	if (on) {
-		sock->so_rcv.sb_flags |= SB_NOINTR;	/* This isn't safe */
-		sock->so_snd.sb_flags |= SB_NOINTR;	/* This isn't safe */
+		sock->so_rcv.sb_flags |= SB_NOINTR;     /* This isn't safe */
+		sock->so_snd.sb_flags |= SB_NOINTR;     /* This isn't safe */
 	} else {
-		sock->so_rcv.sb_flags &= ~SB_NOINTR;	/* This isn't safe */
-		sock->so_snd.sb_flags &= ~SB_NOINTR;	/* This isn't safe */
+		sock->so_rcv.sb_flags &= ~SB_NOINTR;    /* This isn't safe */
+		sock->so_snd.sb_flags &= ~SB_NOINTR;    /* This isn't safe */
 	}
 
 	socket_unlock(sock, 1);
 
-	return (0);
+	return 0;
 }
 
 errno_t
-sock_getpeername(socket_t sock, struct sockaddr	*peername, int peernamelen)
+sock_getpeername(socket_t sock, struct sockaddr *peername, int peernamelen)
 {
 	int error;
-	struct sockaddr	*sa = NULL;
+	struct sockaddr *sa = NULL;
 
-	if (sock == NULL || peername == NULL || peernamelen < 0)
-		return (EINVAL);
+	if (sock == NULL || peername == NULL || peernamelen < 0) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
-	if (!(sock->so_state & (SS_ISCONNECTED|SS_ISCONFIRMING))) {
+	if (!(sock->so_state & (SS_ISCONNECTED | SS_ISCONFIRMING))) {
 		socket_unlock(sock, 1);
-		return (ENOTCONN);
+		return ENOTCONN;
 	}
 	error = sogetaddr_locked(sock, &sa, 1);
 	socket_unlock(sock, 1);
 	if (error == 0) {
-		if (peernamelen > sa->sa_len)
+		if (peernamelen > sa->sa_len) {
 			peernamelen = sa->sa_len;
+		}
 		memcpy(peername, sa, peernamelen);
 		FREE(sa, M_SONAME);
 	}
-	return (error);
+	return error;
 }
 
 errno_t
-sock_getsockname(socket_t sock, struct sockaddr	*sockname, int socknamelen)
+sock_getsockname(socket_t sock, struct sockaddr *sockname, int socknamelen)
 {
 	int error;
-	struct sockaddr	*sa = NULL;
+	struct sockaddr *sa = NULL;
 
-	if (sock == NULL || sockname == NULL || socknamelen < 0)
-		return (EINVAL);
+	if (sock == NULL || sockname == NULL || socknamelen < 0) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
 	error = sogetaddr_locked(sock, &sa, 0);
 	socket_unlock(sock, 1);
 	if (error == 0) {
-		if (socknamelen > sa->sa_len)
+		if (socknamelen > sa->sa_len) {
 			socknamelen = sa->sa_len;
+		}
 		memcpy(sockname, sa, socknamelen);
 		FREE(sa, M_SONAME);
 	}
-	return (error);
+	return error;
 }
 
 __private_extern__ int
@@ -447,8 +465,9 @@ sogetaddr_locked(struct socket *so, struct sockaddr **psa, int peer)
 {
 	int error;
 
-	if (so == NULL || psa == NULL)
-		return (EINVAL);
+	if (so == NULL || psa == NULL) {
+		return EINVAL;
+	}
 
 	*psa = NULL;
 	error = peer ? so->so_proto->pr_usrreqs->pru_peeraddr(so, psa) :
@@ -460,7 +479,7 @@ sogetaddr_locked(struct socket *so, struct sockaddr **psa, int peer)
 		FREE(*psa, M_SONAME);
 		*psa = NULL;
 	}
-	return (error);
+	return error;
 }
 
 errno_t
@@ -468,32 +487,35 @@ sock_getaddr(socket_t sock, struct sockaddr **psa, int peer)
 {
 	int error;
 
-	if (sock == NULL || psa == NULL)
-		return (EINVAL);
+	if (sock == NULL || psa == NULL) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
 	error = sogetaddr_locked(sock, psa, peer);
 	socket_unlock(sock, 1);
 
-	return (error);
+	return error;
 }
 
 void
 sock_freeaddr(struct sockaddr *sa)
 {
-	if (sa != NULL)
+	if (sa != NULL) {
 		FREE(sa, M_SONAME);
+	}
 }
 
 errno_t
 sock_getsockopt(socket_t sock, int level, int optname, void *optval,
-    int	*optlen)
+    int *optlen)
 {
 	int error = 0;
-	struct sockopt	sopt;
+	struct sockopt  sopt;
 
-	if (sock == NULL || optval == NULL || optlen == NULL)
-		return (EINVAL);
+	if (sock == NULL || optval == NULL || optlen == NULL) {
+		return EINVAL;
+	}
 
 	sopt.sopt_dir = SOPT_GET;
 	sopt.sopt_level = level;
@@ -501,26 +523,28 @@ sock_getsockopt(socket_t sock, int level, int optname, void *optval,
 	sopt.sopt_val = CAST_USER_ADDR_T(optval);
 	sopt.sopt_valsize = *optlen;
 	sopt.sopt_p = kernproc;
-	error = sogetoptlock(sock, &sopt, 1);	/* will lock socket */
-	if (error == 0)
-		*optlen = sopt.sopt_valsize;
-	return (error);
+	error = sogetoptlock(sock, &sopt, 1);   /* will lock socket */
+	if (error == 0) {
+		*optlen = (uint32_t)sopt.sopt_valsize;
+	}
+	return error;
 }
 
 errno_t
 sock_ioctl(socket_t sock, unsigned long request, void *argp)
 {
-	return (soioctl(sock, request, argp, kernproc)); /* will lock socket */
+	return soioctl(sock, request, argp, kernproc); /* will lock socket */
 }
 
 errno_t
 sock_setsockopt(socket_t sock, int level, int optname, const void *optval,
-    int	optlen)
+    int optlen)
 {
-	struct sockopt	sopt;
+	struct sockopt  sopt;
 
-	if (sock == NULL || optval == NULL)
-		return (EINVAL);
+	if (sock == NULL || optval == NULL) {
+		return EINVAL;
+	}
 
 	sopt.sopt_dir = SOPT_SET;
 	sopt.sopt_level = level;
@@ -528,29 +552,29 @@ sock_setsockopt(socket_t sock, int level, int optname, const void *optval,
 	sopt.sopt_val = CAST_USER_ADDR_T(optval);
 	sopt.sopt_valsize = optlen;
 	sopt.sopt_p = kernproc;
-	return (sosetoptlock(sock, &sopt, 1)); /* will lock socket */
+	return sosetoptlock(sock, &sopt, 1); /* will lock socket */
 }
 
 /*
  * This follows the recommended mappings between DSCP code points
  * and WMM access classes.
  */
-static u_int32_t so_tc_from_dscp(u_int8_t dscp);
-static u_int32_t
-so_tc_from_dscp(u_int8_t dscp)
+static uint32_t
+so_tc_from_dscp(uint8_t dscp)
 {
-	u_int32_t tc;
+	uint32_t tc;
 
-	if (dscp >= 0x30 && dscp <= 0x3f)
+	if (dscp >= 0x30 && dscp <= 0x3f) {
 		tc = SO_TC_VO;
-	else if (dscp >= 0x20 && dscp <= 0x2f)
+	} else if (dscp >= 0x20 && dscp <= 0x2f) {
 		tc = SO_TC_VI;
-	else if (dscp >= 0x08 && dscp <= 0x17)
+	} else if (dscp >= 0x08 && dscp <= 0x17) {
 		tc = SO_TC_BK_SYS;
-	else
+	} else {
 		tc = SO_TC_BE;
+	}
 
-	return (tc);
+	return tc;
 }
 
 errno_t
@@ -560,8 +584,9 @@ sock_settclassopt(socket_t sock, const void *optval, size_t optlen)
 	struct sockopt sopt;
 	int sotc;
 
-	if (sock == NULL || optval == NULL || optlen != sizeof (int))
-		return (EINVAL);
+	if (sock == NULL || optval == NULL || optlen != sizeof(int)) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
 	if (!(sock->so_state & SS_ISCONNECTED)) {
@@ -584,16 +609,16 @@ sock_settclassopt(socket_t sock, const void *optval, size_t optlen)
 	 * Set the socket traffic class based on the passed DSCP code point
 	 * regardless of the scope of the destination
 	 */
-	sotc = so_tc_from_dscp((*(const int *)optval) >> 2);
+	sotc = so_tc_from_dscp((uint8_t)((*(const int *)optval) >> 2));
 
 	sopt.sopt_dir = SOPT_SET;
 	sopt.sopt_val = CAST_USER_ADDR_T(&sotc);
-	sopt.sopt_valsize = sizeof (sotc);
+	sopt.sopt_valsize = sizeof(sotc);
 	sopt.sopt_p = kernproc;
 	sopt.sopt_level = SOL_SOCKET;
 	sopt.sopt_name = SO_TRAFFIC_CLASS;
 
-	error = sosetoptlock(sock, &sopt, 0);	/* already locked */
+	error = sosetoptlock(sock, &sopt, 0);   /* already locked */
 
 	if (error != 0) {
 		printf("%s: sosetopt SO_TRAFFIC_CLASS failed %d\n",
@@ -606,8 +631,9 @@ sock_settclassopt(socket_t sock, const void *optval, size_t optlen)
 	 * We do not want to set traffic class bits if the destination
 	 * is not local.
 	 */
-	if (!so_isdstlocal(sock))
+	if (!so_isdstlocal(sock)) {
 		goto out;
+	}
 
 	sopt.sopt_dir = SOPT_SET;
 	sopt.sopt_val = CAST_USER_ADDR_T(optval);
@@ -628,12 +654,12 @@ sock_settclassopt(socket_t sock, const void *optval, size_t optlen)
 		goto out;
 	}
 
-	error = sosetoptlock(sock, &sopt, 0);	/* already locked */
+	error = sosetoptlock(sock, &sopt, 0);   /* already locked */
 	socket_unlock(sock, 1);
-	return (error);
+	return error;
 out:
 	socket_unlock(sock, 1);
-	return (error);
+	return error;
 }
 
 errno_t
@@ -642,8 +668,9 @@ sock_gettclassopt(socket_t sock, void *optval, size_t *optlen)
 	errno_t error = 0;
 	struct sockopt sopt;
 
-	if (sock == NULL || optval == NULL || optlen == NULL)
-		return (EINVAL);
+	if (sock == NULL || optval == NULL || optlen == NULL) {
+		return EINVAL;
+	}
 
 	sopt.sopt_dir = SOPT_GET;
 	sopt.sopt_val = CAST_USER_ADDR_T(optval);
@@ -653,7 +680,7 @@ sock_gettclassopt(socket_t sock, void *optval, size_t *optlen)
 	socket_lock(sock, 1);
 	if (sock->so_proto == NULL || sock->so_proto->pr_domain == NULL) {
 		socket_unlock(sock, 1);
-		return (EINVAL);
+		return EINVAL;
 	}
 
 	switch (SOCK_DOM(sock)) {
@@ -667,23 +694,24 @@ sock_gettclassopt(socket_t sock, void *optval, size_t *optlen)
 		break;
 	default:
 		socket_unlock(sock, 1);
-		return (EINVAL);
-
+		return EINVAL;
 	}
-	error = sogetoptlock(sock, &sopt, 0);	/* already locked */
+	error = sogetoptlock(sock, &sopt, 0);   /* already locked */
 	socket_unlock(sock, 1);
-	if (error == 0)
+	if (error == 0) {
 		*optlen = sopt.sopt_valsize;
-	return (error);
+	}
+	return error;
 }
 
 errno_t
 sock_listen(socket_t sock, int backlog)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
-	return (solisten(sock, backlog)); /* will lock socket */
+	return solisten(sock, backlog); /* will lock socket */
 }
 
 errno_t
@@ -693,15 +721,16 @@ sock_receive_internal(socket_t sock, struct msghdr *msg, mbuf_t *data,
 	uio_t auio;
 	struct mbuf *control = NULL;
 	int error = 0;
-	int length = 0;
-	struct sockaddr	*fromsa = NULL;
-	char uio_buf[ UIO_SIZEOF((msg != NULL) ? msg->msg_iovlen : 0) ];
+	user_ssize_t length = 0;
+	struct sockaddr *fromsa = NULL;
+	char uio_buf[UIO_SIZEOF((msg != NULL) ? msg->msg_iovlen : 0)];
 
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
 	auio = uio_createwithbuffer(((msg != NULL) ? msg->msg_iovlen : 0),
-	    0, UIO_SYSSPACE, UIO_READ, &uio_buf[0], sizeof (uio_buf));
+	    0, UIO_SYSSPACE, UIO_READ, &uio_buf[0], sizeof(uio_buf));
 	if (msg != NULL && data == NULL) {
 		int i;
 		struct iovec *tempp = msg->msg_iov;
@@ -711,24 +740,28 @@ sock_receive_internal(socket_t sock, struct msghdr *msg, mbuf_t *data,
 			    CAST_USER_ADDR_T((tempp + i)->iov_base),
 			    (tempp + i)->iov_len);
 		}
-		if (uio_resid(auio) < 0)
-			return (EINVAL);
+		if (uio_resid(auio) < 0) {
+			return EINVAL;
+		}
 	} else if (recvdlen != NULL) {
 		uio_setresid(auio, (uio_resid(auio) + *recvdlen));
 	}
 	length = uio_resid(auio);
 
-	if (recvdlen != NULL)
+	if (recvdlen != NULL) {
 		*recvdlen = 0;
+	}
 
 	/* let pru_soreceive handle the socket locking */
 	error = sock->so_proto->pr_usrreqs->pru_soreceive(sock, &fromsa, auio,
 	    data, (msg && msg->msg_control) ? &control : NULL, &flags);
-	if (error != 0)
+	if (error != 0) {
 		goto cleanup;
+	}
 
-	if (recvdlen != NULL)
+	if (recvdlen != NULL) {
 		*recvdlen = length - uio_resid(auio);
+	}
 	if (msg != NULL) {
 		msg->msg_flags = flags;
 
@@ -765,16 +798,18 @@ sock_receive_internal(socket_t sock, struct msghdr *msg, mbuf_t *data,
 				m = m->m_next;
 			}
 			msg->msg_controllen =
-			    (uintptr_t)ctlbuf - (uintptr_t)msg->msg_control;
+			    (socklen_t)((uintptr_t)ctlbuf - (uintptr_t)msg->msg_control);
 		}
 	}
 
 cleanup:
-	if (control != NULL)
+	if (control != NULL) {
 		m_freem(control);
-	if (fromsa != NULL)
+	}
+	if (fromsa != NULL) {
 		FREE(fromsa, M_SONAME);
-	return (error);
+	}
+	return error;
 }
 
 errno_t
@@ -782,10 +817,11 @@ sock_receive(socket_t sock, struct msghdr *msg, int flags, size_t *recvdlen)
 {
 	if ((msg == NULL) || (msg->msg_iovlen < 1) ||
 	    (msg->msg_iov[0].iov_len == 0) ||
-	    (msg->msg_iov[0].iov_base == NULL))
-		return (EINVAL);
+	    (msg->msg_iov[0].iov_base == NULL)) {
+		return EINVAL;
+	}
 
-	return (sock_receive_internal(sock, msg, NULL, flags, recvdlen));
+	return sock_receive_internal(sock, msg, NULL, flags, recvdlen);
 }
 
 errno_t
@@ -793,10 +829,11 @@ sock_receivembuf(socket_t sock, struct msghdr *msg, mbuf_t *data, int flags,
     size_t *recvlen)
 {
 	if (data == NULL || recvlen == 0 || *recvlen <= 0 || (msg != NULL &&
-	    (msg->msg_iov != NULL || msg->msg_iovlen != 0)))
-		return (EINVAL);
+	    (msg->msg_iov != NULL || msg->msg_iovlen != 0))) {
+		return EINVAL;
+	}
 
-	return (sock_receive_internal(sock, msg, data, flags, recvlen));
+	return sock_receive_internal(sock, msg, data, flags, recvlen);
 }
 
 errno_t
@@ -806,8 +843,8 @@ sock_send_internal(socket_t sock, const struct msghdr *msg, mbuf_t data,
 	uio_t auio = NULL;
 	struct mbuf *control = NULL;
 	int error = 0;
-	int datalen = 0;
-	char uio_buf[ UIO_SIZEOF((msg != NULL ? msg->msg_iovlen : 1)) ];
+	user_ssize_t datalen = 0;
+	char uio_buf[UIO_SIZEOF((msg != NULL ? msg->msg_iovlen : 1))];
 
 	if (sock == NULL) {
 		error = EINVAL;
@@ -818,7 +855,7 @@ sock_send_internal(socket_t sock, const struct msghdr *msg, mbuf_t data,
 		struct iovec *tempp = msg->msg_iov;
 
 		auio = uio_createwithbuffer(msg->msg_iovlen, 0,
-		    UIO_SYSSPACE, UIO_WRITE, &uio_buf[0], sizeof (uio_buf));
+		    UIO_SYSSPACE, UIO_WRITE, &uio_buf[0], sizeof(uio_buf));
 		if (tempp != NULL) {
 			int i;
 
@@ -835,16 +872,18 @@ sock_send_internal(socket_t sock, const struct msghdr *msg, mbuf_t data,
 		}
 	}
 
-	if (sentlen != NULL)
+	if (sentlen != NULL) {
 		*sentlen = 0;
+	}
 
-	if (auio != NULL)
+	if (auio != NULL) {
 		datalen = uio_resid(auio);
-	else
+	} else {
 		datalen = data->m_pkthdr.len;
+	}
 
 	if (msg != NULL && msg->msg_control) {
-		if ((size_t)msg->msg_controllen < sizeof (struct cmsghdr)) {
+		if ((size_t)msg->msg_controllen < sizeof(struct cmsghdr)) {
 			error = EINVAL;
 			goto errorout;
 		}
@@ -876,17 +915,19 @@ sock_send_internal(socket_t sock, const struct msghdr *msg, mbuf_t data,
 	 * is consistent with sendit() behavior.
 	 */
 	if (auio != NULL && uio_resid(auio) != datalen &&
-	    (error == ERESTART || error == EINTR || error == EWOULDBLOCK))
+	    (error == ERESTART || error == EINTR || error == EWOULDBLOCK)) {
 		error = 0;
-
-	if (error == 0 && sentlen != NULL) {
-		if (auio != NULL)
-			*sentlen = datalen - uio_resid(auio);
-		else
-			*sentlen = datalen;
 	}
 
-	return (error);
+	if (error == 0 && sentlen != NULL) {
+		if (auio != NULL) {
+			*sentlen = datalen - uio_resid(auio);
+		} else {
+			*sentlen = datalen;
+		}
+	}
+
+	return error;
 
 /*
  * In cases where we detect an error before returning, we need to
@@ -894,44 +935,50 @@ sock_send_internal(socket_t sock, const struct msghdr *msg, mbuf_t data,
  * free the mbuf chain if they encounter an error.
  */
 errorout:
-	if (control)
+	if (control) {
 		m_freem(control);
-	if (data)
+	}
+	if (data) {
 		m_freem(data);
-	if (sentlen)
+	}
+	if (sentlen) {
 		*sentlen = 0;
-	return (error);
+	}
+	return error;
 }
 
 errno_t
 sock_send(socket_t sock, const struct msghdr *msg, int flags, size_t *sentlen)
 {
-	if (msg == NULL || msg->msg_iov == NULL || msg->msg_iovlen < 1)
-		return (EINVAL);
+	if (msg == NULL || msg->msg_iov == NULL || msg->msg_iovlen < 1) {
+		return EINVAL;
+	}
 
-	return (sock_send_internal(sock, msg, NULL, flags, sentlen));
+	return sock_send_internal(sock, msg, NULL, flags, sentlen);
 }
 
 errno_t
 sock_sendmbuf(socket_t sock, const struct msghdr *msg, mbuf_t data,
-    int	flags, size_t *sentlen)
+    int flags, size_t *sentlen)
 {
 	if (data == NULL || (msg != NULL && (msg->msg_iov != NULL ||
 	    msg->msg_iovlen != 0))) {
-		if (data != NULL)
+		if (data != NULL) {
 			m_freem(data);
-		return (EINVAL);
+		}
+		return EINVAL;
 	}
-	return (sock_send_internal(sock, msg, data, flags, sentlen));
+	return sock_send_internal(sock, msg, data, flags, sentlen);
 }
 
 errno_t
 sock_shutdown(socket_t sock, int how)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
-	return (soshutdown(sock, how));
+	return soshutdown(sock, how);
 }
 
 errno_t
@@ -940,8 +987,9 @@ sock_socket_common(int domain, int type, int protocol, sock_upcall callback,
 {
 	int error = 0;
 
-	if (new_so == NULL)
-		return (EINVAL);
+	if (new_so == NULL) {
+		return EINVAL;
+	}
 
 	/* socreate will create an initial so_count */
 	error = socreate(domain, new_so, type, protocol);
@@ -959,37 +1007,38 @@ sock_socket_common(int domain, int type, int protocol, sock_upcall callback,
 		if (callback != NULL) {
 			sock_setupcall(*new_so, callback, context);
 		}
-		/* 
+		/*
 		 * last_pid and last_upid should be zero for sockets
 		 * created using sock_socket
 		 */
 		(*new_so)->last_pid = 0;
 		(*new_so)->last_upid = 0;
 	}
-	return (error);
+	return error;
 }
 
 errno_t
 sock_socket_internal(int domain, int type, int protocol, sock_upcall callback,
     void *context, socket_t *new_so)
 {
-	return (sock_socket_common(domain, type, protocol, callback,
-	    context, new_so, true));
+	return sock_socket_common(domain, type, protocol, callback,
+	           context, new_so, true);
 }
 
 errno_t
 sock_socket(int domain, int type, int protocol, sock_upcall callback,
     void *context, socket_t *new_so)
 {
-	return (sock_socket_common(domain, type, protocol, callback,
-	    context, new_so, false));
+	return sock_socket_common(domain, type, protocol, callback,
+	           context, new_so, false);
 }
 
 void
 sock_close(socket_t sock)
 {
-	if (sock == NULL)
+	if (sock == NULL) {
 		return;
+	}
 
 	soclose(sock);
 }
@@ -998,12 +1047,13 @@ sock_close(socket_t sock)
 void
 sock_retain(socket_t sock)
 {
-	if (sock == NULL)
+	if (sock == NULL) {
 		return;
+	}
 
 	socket_lock(sock, 1);
 	sock->so_retaincnt++;
-	sock->so_usecount++;	/* add extra reference for holding the socket */
+	sock->so_usecount++;    /* add extra reference for holding the socket */
 	socket_unlock(sock, 1);
 }
 
@@ -1011,12 +1061,14 @@ sock_retain(socket_t sock)
 void
 sock_release(socket_t sock)
 {
-	if (sock == NULL)
+	if (sock == NULL) {
 		return;
+	}
 
 	socket_lock(sock, 1);
-	if (sock->so_upcallusecount > 0)
+	if (sock->so_upcallusecount > 0) {
 		soclose_wait_locked(sock);
+	}
 
 	sock->so_retaincnt--;
 	if (sock->so_retaincnt < 0) {
@@ -1044,16 +1096,18 @@ sock_release(socket_t sock)
 errno_t
 sock_setpriv(socket_t sock, int on)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
-	if (on)
+	if (on) {
 		sock->so_state |= SS_PRIV;
-	else
+	} else {
 		sock->so_state &= ~SS_PRIV;
+	}
 	socket_unlock(sock, 1);
-	return (0);
+	return 0;
 }
 
 int
@@ -1064,7 +1118,7 @@ sock_isconnected(socket_t sock)
 	socket_lock(sock, 1);
 	retval = ((sock->so_state & SS_ISCONNECTED) ? 1 : 0);
 	socket_unlock(sock, 1);
-	return (retval);
+	return retval;
 }
 
 int
@@ -1075,21 +1129,24 @@ sock_isnonblocking(socket_t sock)
 	socket_lock(sock, 1);
 	retval = ((sock->so_state & SS_NBIO) ? 1 : 0);
 	socket_unlock(sock, 1);
-	return (retval);
+	return retval;
 }
 
 errno_t
 sock_gettype(socket_t sock, int *outDomain, int *outType, int *outProtocol)
 {
 	socket_lock(sock, 1);
-	if (outDomain != NULL)
+	if (outDomain != NULL) {
 		*outDomain = SOCK_DOM(sock);
-	if (outType != NULL)
+	}
+	if (outType != NULL) {
 		*outType = sock->so_type;
-	if (outProtocol != NULL)
+	}
+	if (outProtocol != NULL) {
 		*outProtocol = SOCK_PROTO(sock);
+	}
 	socket_unlock(sock, 1);
-	return (0);
+	return 0;
 }
 
 /*
@@ -1103,7 +1160,7 @@ sock_gettype(socket_t sock, int *outDomain, int *outType, int *outProtocol)
 socket_t
 sock_getlistener(socket_t sock)
 {
-	return (sock->so_head);
+	return sock->so_head;
 }
 
 static inline void
@@ -1122,12 +1179,14 @@ void
 socket_set_traffic_mgt_flags_locked(socket_t sock, u_int8_t flags)
 {
 	u_int32_t soflags1 = 0;
-	
-	if ((flags & TRAFFIC_MGT_SO_BACKGROUND))
+
+	if ((flags & TRAFFIC_MGT_SO_BACKGROUND)) {
 		soflags1 |= SOF1_TRAFFIC_MGT_SO_BACKGROUND;
-	if ((flags & TRAFFIC_MGT_TCP_RECVBG))
+	}
+	if ((flags & TRAFFIC_MGT_TCP_RECVBG)) {
 		soflags1 |= SOF1_TRAFFIC_MGT_TCP_RECVBG;
-	
+	}
+
 	(void) OSBitOrAtomic(soflags1, &sock->so_flags1);
 
 	sock_set_tcp_stream_priority(sock);
@@ -1149,11 +1208,13 @@ socket_clear_traffic_mgt_flags_locked(socket_t sock, u_int8_t flags)
 {
 	u_int32_t soflags1 = 0;
 
-	if ((flags & TRAFFIC_MGT_SO_BACKGROUND))
+	if ((flags & TRAFFIC_MGT_SO_BACKGROUND)) {
 		soflags1 |= SOF1_TRAFFIC_MGT_SO_BACKGROUND;
-	if ((flags & TRAFFIC_MGT_TCP_RECVBG))
+	}
+	if ((flags & TRAFFIC_MGT_TCP_RECVBG)) {
 		soflags1 |= SOF1_TRAFFIC_MGT_TCP_RECVBG;
-	
+	}
+
 	(void) OSBitAndAtomic(~soflags1, &sock->so_flags1);
 
 	sock_set_tcp_stream_priority(sock);
@@ -1177,8 +1238,9 @@ socket_defunct(struct proc *p, socket_t so, int level)
 	errno_t retval;
 
 	if (level != SHUTDOWN_SOCKET_LEVEL_DISCONNECT_SVC &&
-	    level != SHUTDOWN_SOCKET_LEVEL_DISCONNECT_ALL)
-		return (EINVAL);
+	    level != SHUTDOWN_SOCKET_LEVEL_DISCONNECT_ALL) {
+		return EINVAL;
+	}
 
 	socket_lock(so, 1);
 	/*
@@ -1191,13 +1253,14 @@ socket_defunct(struct proc *p, socket_t so, int level)
 	if (level == SHUTDOWN_SOCKET_LEVEL_DISCONNECT_SVC &&
 	    (so->so_rcv.sb_flags & so->so_snd.sb_flags & SB_UNIX) != SB_UNIX) {
 		socket_unlock(so, 1);
-		return (EOPNOTSUPP);
+		return EOPNOTSUPP;
 	}
 	retval = sosetdefunct(p, so, level, TRUE);
-	if (retval == 0)
+	if (retval == 0) {
 		retval = sodefunct(p, so, level);
+	}
 	socket_unlock(so, 1);
-	return (retval);
+	return retval;
 }
 
 void
@@ -1206,8 +1269,9 @@ sock_setupcalls_locked(socket_t sock, sock_upcall rcallback, void *rcontext,
 {
 	if (rcallback != NULL) {
 		sock->so_rcv.sb_flags |= SB_UPCALL;
-		if (locked)
+		if (locked) {
 			sock->so_rcv.sb_flags |= SB_UPCALL_LOCK;
+		}
 		sock->so_rcv.sb_upcall = rcallback;
 		sock->so_rcv.sb_upcallarg = rcontext;
 	} else {
@@ -1218,8 +1282,9 @@ sock_setupcalls_locked(socket_t sock, sock_upcall rcallback, void *rcontext,
 
 	if (wcallback != NULL) {
 		sock->so_snd.sb_flags |= SB_UPCALL;
-		if (locked)
+		if (locked) {
 			sock->so_snd.sb_flags |= SB_UPCALL_LOCK;
+		}
 		sock->so_snd.sb_upcall = wcallback;
 		sock->so_snd.sb_upcallarg = wcontext;
 	} else {
@@ -1232,8 +1297,9 @@ sock_setupcalls_locked(socket_t sock, sock_upcall rcallback, void *rcontext,
 errno_t
 sock_setupcall(socket_t sock, sock_upcall callback, void *context)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
 	/*
 	 * Note that we don't wait for any in progress upcall to complete.
@@ -1245,22 +1311,23 @@ sock_setupcall(socket_t sock, sock_upcall callback, void *context)
 	 * the read and write callbacks and their respective parameters.
 	 */
 	socket_lock(sock, 1);
-#if CONFIG_EMBEDDED
+#if (defined(__arm__) || defined(__arm64__))
 	sock_setupcalls_locked(sock, callback, context, callback, context, 0);
-#else
+#else /* (defined(__arm__) || defined(__arm64__)) */
 	sock_setupcalls_locked(sock, callback, context, NULL, NULL, 0);
-#endif /* !CONFIG_EMBEDDED */
+#endif /* (defined(__arm__) || defined(__arm64__)) */
 	socket_unlock(sock, 1);
 
-	return (0);
+	return 0;
 }
 
 errno_t
 sock_setupcalls(socket_t sock, sock_upcall rcallback, void *rcontext,
     sock_upcall wcallback, void *wcontext)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
 	/*
 	 * Note that we don't wait for any in progress upcall to complete.
@@ -1269,12 +1336,12 @@ sock_setupcalls(socket_t sock, sock_upcall rcallback, void *rcontext,
 	sock_setupcalls_locked(sock, rcallback, rcontext, wcallback, wcontext, 0);
 	socket_unlock(sock, 1);
 
-	return (0);
+	return 0;
 }
 
 void
 sock_catchevents_locked(socket_t sock, sock_evupcall ecallback, void *econtext,
-    u_int32_t emask)
+    long emask)
 {
 	socket_lock_assert_owned(sock);
 
@@ -1284,7 +1351,7 @@ sock_catchevents_locked(socket_t sock, sock_evupcall ecallback, void *econtext,
 	if (ecallback != NULL) {
 		sock->so_event = ecallback;
 		sock->so_eventarg = econtext;
-		sock->so_eventmask = emask;
+		sock->so_eventmask = (uint32_t)emask;
 	} else {
 		sock->so_event = sonullevent;
 		sock->so_eventarg = NULL;
@@ -1294,16 +1361,17 @@ sock_catchevents_locked(socket_t sock, sock_evupcall ecallback, void *econtext,
 
 errno_t
 sock_catchevents(socket_t sock, sock_evupcall ecallback, void *econtext,
-    u_int32_t emask)
+    long emask)
 {
-	if (sock == NULL)
-		return (EINVAL);
+	if (sock == NULL) {
+		return EINVAL;
+	}
 
 	socket_lock(sock, 1);
 	sock_catchevents_locked(sock, ecallback, econtext, emask);
 	socket_unlock(sock, 1);
 
-	return (0);
+	return 0;
 }
 
 /*
@@ -1312,5 +1380,5 @@ sock_catchevents(socket_t sock, sock_evupcall ecallback, void *econtext,
 int
 sock_iskernel(socket_t so)
 {
-	return (so && so->last_pid == 0);
+	return so && so->last_pid == 0;
 }

@@ -82,7 +82,7 @@ vm_offset_t vm_prelink_edata;
 vm_offset_t vm_kernel_builtinkmod_text;
 vm_offset_t vm_kernel_builtinkmod_text_end;
 
-unsigned long gVirtBase, gPhysBase, gPhysSize;	    /* Used by <mach/arm/vm_param.h> */
+unsigned long gVirtBase, gPhysBase, gPhysSize;      /* Used by <mach/arm/vm_param.h> */
 
 vm_offset_t   mem_size;                             /* Size of actual physical memory present
                                                      * minus any performance buffer and possibly
@@ -90,8 +90,9 @@ vm_offset_t   mem_size;                             /* Size of actual physical m
 uint64_t      mem_actual;                           /* The "One True" physical memory size
                                                      * actually, it's the highest physical
                                                      * address + 1 */
-uint64_t      max_mem;                              /* Size of physical memory (bytes), adjusted
-                                                     * by maxmem */
+uint64_t      max_mem;                              /* kernel/vm managed memory, adjusted by maxmem */
+uint64_t      max_mem_actual;                       /* Actual size of physical memory (bytes), adjusted
+                                                     * by the maxmem boot-arg */
 uint64_t      sane_size;                            /* Memory size to use for defaults
                                                      * calculations */
 addr64_t      vm_last_addr = VM_MAX_KERNEL_ADDRESS; /* Highest kernel
@@ -101,15 +102,18 @@ addr64_t      vm_last_addr = VM_MAX_KERNEL_ADDRESS; /* Highest kernel
 vm_offset_t            segEXTRADATA;
 unsigned long          segSizeEXTRADATA;
 vm_offset_t            segLOWESTTEXT;
+vm_offset_t            segLOWEST;
 static vm_offset_t     segTEXTB;
 static unsigned long   segSizeTEXT;
 static vm_offset_t     segDATAB;
 static unsigned long   segSizeDATA;
-static vm_offset_t     segLINKB;
+vm_offset_t            segLINKB;
 static unsigned long   segSizeLINK;
 static vm_offset_t     segKLDB;
 static unsigned long   segSizeKLD;
 static vm_offset_t     segLASTB;
+static vm_offset_t     segLASTDATACONSTB;
+static unsigned long   segSizeLASTDATACONST;
 static unsigned long   segSizeLAST;
 static vm_offset_t     sectCONSTB;
 static unsigned long   sectSizeCONST;
@@ -123,6 +127,18 @@ vm_offset_t     segPRELINKTEXTB;
 unsigned long   segSizePRELINKTEXT;
 vm_offset_t     segPRELINKINFOB;
 unsigned long   segSizePRELINKINFO;
+
+vm_offset_t          segLOWESTKC;
+vm_offset_t          segHIGHESTKC;
+vm_offset_t          segLOWESTROKC;
+vm_offset_t          segHIGHESTROKC;
+vm_offset_t          segLOWESTAuxKC;
+vm_offset_t          segHIGHESTAuxKC;
+vm_offset_t          segLOWESTROAuxKC;
+vm_offset_t          segHIGHESTROAuxKC;
+vm_offset_t          segLOWESTRXAuxKC;
+vm_offset_t          segHIGHESTRXAuxKC;
+vm_offset_t          segHIGHESTNLEAuxKC;
 
 static kernel_segment_command_t *segDATA;
 static boolean_t doconstro = TRUE;
@@ -155,12 +171,12 @@ extern vm_offset_t ExceptionVectorsBase; /* the code we want to load there */
 vm_map_address_t
 phystokv(pmap_paddr_t pa)
 {
-	return (pa - gPhysBase + gVirtBase);
+	return pa - gPhysBase + gVirtBase;
 }
 
 static void
-arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va, 
-                            int pte_prot_APX, int pte_prot_XN)
+arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
+    int pte_prot_APX, int pte_prot_XN)
 {
 	if (va & ARM_TT_L1_PT_OFFMASK) { /* ragged edge hanging over a ARM_TT_L1_PT_SIZE  boundary */
 		va &= (~ARM_TT_L1_PT_OFFMASK);
@@ -172,8 +188,9 @@ arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
 
 		pa = va - gVirtBase + gPhysBase;
 
-		if (pa >= avail_end)
+		if (pa >= avail_end) {
 			return;
+		}
 
 		assert(_end >= va);
 
@@ -183,27 +200,30 @@ arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
 		} else {
 			/* TTE must be reincarnated COARSE. */
 			ppte = (pt_entry_t *)phystokv(avail_start);
+			pmap_paddr_t l2table = avail_start;
 			avail_start += ARM_PGBYTES;
 			bzero(ppte, ARM_PGBYTES);
 
-			for (i = 0; i < 4; ++i)
-				tte[i] = pa_to_tte(kvtophys((vm_offset_t)ppte) + (i * 0x400)) | ARM_TTE_TYPE_TABLE;
+			for (i = 0; i < 4; ++i) {
+				tte[i] = pa_to_tte(l2table + (i * 0x400)) | ARM_TTE_TYPE_TABLE;
+			}
 		}
 
 		vm_offset_t len = _end - va;
-		if ((pa + len) > avail_end)
+		if ((pa + len) > avail_end) {
 			_end -= (pa + len - avail_end);
+		}
 		assert((start - gVirtBase + gPhysBase) >= gPhysBase);
 
 		/* Apply the desired protections to the specified page range */
 		for (i = 0; i < (ARM_PGBYTES / sizeof(*ppte)); i++) {
 			if (start <= va && va < _end) {
-
 				ptmp = pa | ARM_PTE_AF | ARM_PTE_SH | ARM_PTE_TYPE;
 				ptmp = ptmp | ARM_PTE_ATTRINDX(CACHE_ATTRINDX_DEFAULT);
 				ptmp = ptmp | ARM_PTE_AP(pte_prot_APX);
-				if (pte_prot_XN)
+				if (pte_prot_XN) {
 					ptmp = ptmp | ARM_PTE_NX;
+				}
 
 				ppte[i] = ptmp;
 			}
@@ -215,8 +235,8 @@ arm_vm_page_granular_helper(vm_offset_t start, vm_offset_t _end, vm_offset_t va,
 }
 
 static void
-arm_vm_page_granular_prot(vm_offset_t start, unsigned long size, 
-                          int tte_prot_XN, int pte_prot_APX, int pte_prot_XN, int force_page_granule)
+arm_vm_page_granular_prot(vm_offset_t start, unsigned long size,
+    int tte_prot_XN, int pte_prot_APX, int pte_prot_XN, int force_page_granule)
 {
 	vm_offset_t _end = start + size;
 	vm_offset_t align_start = (start + ARM_TT_L1_PT_OFFMASK) & ~ARM_TT_L1_PT_OFFMASK;
@@ -226,8 +246,8 @@ arm_vm_page_granular_prot(vm_offset_t start, unsigned long size,
 
 	while (align_start < align_end) {
 		if (force_page_granule) {
-			arm_vm_page_granular_helper(align_start, align_end, align_start + 1, 
-			                            pte_prot_APX, pte_prot_XN);
+			arm_vm_page_granular_helper(align_start, align_end, align_start + 1,
+			    pte_prot_APX, pte_prot_XN);
 		} else {
 			tt_entry_t *tte = &cpu_tte[ttenum(align_start)];
 			for (int i = 0; i < 4; ++i) {
@@ -235,8 +255,9 @@ arm_vm_page_granular_prot(vm_offset_t start, unsigned long size,
 
 				tmplate = (tmplate & ~ARM_TTE_BLOCK_APMASK) | ARM_TTE_BLOCK_AP(pte_prot_APX);
 				tmplate = (tmplate & ~ARM_TTE_BLOCK_NX_MASK);
-				if (tte_prot_XN)
+				if (tte_prot_XN) {
 					tmplate = tmplate | ARM_TTE_BLOCK_NX;
+				}
 
 				tte[i] = tmplate;
 			}
@@ -281,9 +302,9 @@ arm_vm_prot_init(boot_args * args)
 #endif
 	/*
 	 * Enforce W^X protections on segments that have been identified so far. This will be
-	 * further refined for each KEXT's TEXT and DATA segments in readPrelinkedExtensions() 
+	 * further refined for each KEXT's TEXT and DATA segments in readPrelinkedExtensions()
 	 */
-	
+
 	/*
 	 * Protection on kernel text is loose here to allow shenanigans early on (e.g. copying exception vectors)
 	 * and storing an address into "error_buffer" (see arm_init.c) !?!
@@ -311,9 +332,12 @@ arm_vm_prot_init(boot_args * args)
 	arm_vm_page_granular_ROX(segKLDB, segSizeKLD, force_coarse_physmap);
 	arm_vm_page_granular_RWNX(segLINKB, segSizeLINK, force_coarse_physmap);
 	arm_vm_page_granular_RWNX(segLASTB, segSizeLAST, FALSE); // __LAST may be empty, but we cannot assume this
+	if (segLASTDATACONSTB) {
+		arm_vm_page_granular_RWNX(segLASTDATACONSTB, segSizeLASTDATACONST, FALSE); // __LASTDATA_CONST may be empty, but we cannot assume this
+	}
 	arm_vm_page_granular_RWNX(segPRELINKTEXTB, segSizePRELINKTEXT, TRUE); // Refined in OSKext::readPrelinkedExtensions
 	arm_vm_page_granular_RWNX(segPRELINKTEXTB + segSizePRELINKTEXT,
-	                             end_kern - (segPRELINKTEXTB + segSizePRELINKTEXT), force_coarse_physmap); // PreLinkInfoDictionary
+	    end_kern - (segPRELINKTEXTB + segSizePRELINKTEXT), force_coarse_physmap);                          // PreLinkInfoDictionary
 	arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern, force_coarse_physmap); // Device Tree, RAM Disk (if present), bootArgs, trust caches
 	arm_vm_page_granular_RNX(segEXTRADATA, segSizeEXTRADATA, FALSE); // tighter trust cache protection
 	arm_vm_page_granular_RWNX(phystokv(args->topOfKernelData), ARM_PGBYTES * 8, FALSE); // boot_tte, cpu_tte
@@ -331,7 +355,7 @@ arm_vm_prot_init(boot_args * args)
 
 	/* Map the remainder of xnu owned memory. */
 	arm_vm_page_granular_RWNX(phystokv(args->topOfKernelData) + ARM_PGBYTES * 10,
-	                          static_memory_end - (phystokv(args->topOfKernelData) + ARM_PGBYTES * 10), force_coarse_physmap); /* rest of physmem */
+	    static_memory_end - (phystokv(args->topOfKernelData) + ARM_PGBYTES * 10), force_coarse_physmap);                       /* rest of physmem */
 
 	/*
 	 * Special case write protection for the mapping of ExceptionVectorsBase (EVB) at 0xFFFF0000.
@@ -339,8 +363,9 @@ arm_vm_prot_init(boot_args * args)
 	 */
 	pmap_paddr_t p = (pmap_paddr_t)(args->topOfKernelData) + (ARM_PGBYTES * 9);
 	pt_entry_t *ppte = (pt_entry_t *)phystokv(p);
+	pmap_init_pte_page(kernel_pmap, ppte, HIGH_EXC_VECTORS & ~ARM_TT_L1_PT_OFFMASK, 2, TRUE);
 
-	int idx = (HIGH_EXC_VECTORS & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT;
+	int idx = (HIGH_EXC_VECTORS & ARM_TT_L1_PT_OFFMASK) >> ARM_TT_L2_SHIFT;
 	pt_entry_t ptmp = ppte[idx];
 
 	ptmp = (ptmp & ~ARM_PTE_APMASK) | ARM_PTE_AP(AP_RONA);
@@ -363,16 +388,13 @@ arm_vm_prot_finalize(boot_args * args)
 
 	arm_vm_page_granular_RWNX(phystokv(args->topOfKernelData) + ARM_PGBYTES * 9, ARM_PGBYTES, FALSE); /* commpage, EVB */
 
-#ifndef  __ARM_L1_PTW__
-	FlushPoC_Dcache();
-#endif
 	flush_mmu_tlb();
 }
 
 /* used in the chosen/memory-map node, populated by iBoot. */
 typedef struct MemoryMapFileInfo {
-       vm_offset_t paddr;
-       size_t length;
+	vm_offset_t paddr;
+	size_t length;
 } MemoryMapFileInfo;
 
 
@@ -393,10 +415,17 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	gPhysBase = args->physBase;
 	gPhysSize = args->memSize;
 	mem_size = args->memSize;
-	if ((memory_size != 0) && (mem_size > memory_size))
-		mem_size = memory_size;
-	if (mem_size > MEM_SIZE_MAX )
+	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
+	if (mem_size > MEM_SIZE_MAX) {
 		mem_size = MEM_SIZE_MAX;
+	}
+	if ((memory_size != 0) && (mem_size > memory_size)) {
+		mem_size = memory_size;
+		max_mem_actual = memory_size;
+	} else {
+		max_mem_actual = mem_actual;
+	}
+
 	static_memory_end = gVirtBase + mem_size;
 
 	/* Calculate the nubmer of ~256MB segments of memory */
@@ -424,18 +453,20 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 
 	/* Hands off [gVirtBase, gVirtBase + gPhysSize) please. */
 	if (gPhysBase < gVirtBase) {
-		if (gPhysBase + gPhysSize > gVirtBase)
+		if (gPhysBase + gPhysSize > gVirtBase) {
 			tte_limit = &cpu_tte[ttenum(gVirtBase)];
+		}
 	} else {
-		if (gPhysBase < gVirtBase + gPhysSize)
+		if (gPhysBase < gVirtBase + gPhysSize) {
 			tte = &cpu_tte[ttenum(gVirtBase + gPhysSize)];
+		}
 	}
 
 	while (tte < tte_limit) {
-		*tte = ARM_TTE_TYPE_FAULT; 
+		*tte = ARM_TTE_TYPE_FAULT;
 		tte++;
 	}
-		
+
 	/* Skip 6 pages (four L1 + two L2 entries) */
 	avail_start = cpu_ttep + ARM_PGBYTES * 6;
 	avail_end = gPhysBase + mem_size;
@@ -446,10 +477,12 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	 */
 	segTEXTB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__TEXT", &segSizeTEXT);
 	segLOWESTTEXT = segTEXTB;
+	segLOWEST = segLOWESTTEXT;
 	segDATAB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__DATA", &segSizeDATA);
 	segLINKB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__LINKEDIT", &segSizeLINK);
 	segKLDB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__KLD", &segSizeKLD);
 	segLASTB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__LAST", &segSizeLAST);
+	segLASTDATACONSTB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__LASTDATA_CONST", &segSizeLASTDATACONST);
 	segPRELINKTEXTB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__PRELINK_TEXT", &segSizePRELINKTEXT);
 	segPRELINKINFOB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__PRELINK_INFO", &segSizePRELINKINFO);
 	segBOOTDATAB = (vm_offset_t) getsegdatafromheader(&_mh_execute_header, "__BOOTDATA", &segSizeBOOTDATA);
@@ -458,14 +491,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	segSizeEXTRADATA = 0;
 
 	DTEntry memory_map;
-	MemoryMapFileInfo *trustCacheRange;
+	MemoryMapFileInfo const *trustCacheRange;
 	unsigned int trustCacheRangeSize;
 	int err;
 
-	err = DTLookupEntry(NULL, "chosen/memory-map", &memory_map);
+	err = SecureDTLookupEntry(NULL, "chosen/memory-map", &memory_map);
 	assert(err == kSuccess);
 
-	err = DTGetProperty(memory_map, "TrustCache", (void**)&trustCacheRange, &trustCacheRangeSize);
+	err = SecureDTGetProperty(memory_map, "TrustCache", (const void**)&trustCacheRange, &trustCacheRangeSize);
 	if (err == kSuccess) {
 		assert(trustCacheRangeSize == sizeof(MemoryMapFileInfo));
 
@@ -482,17 +515,12 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	 * Special handling for the __DATA,__const *section*.
 	 * A page of padding named lastkerneldataconst is at the end of the __DATA,__const
 	 * so we can safely truncate the size. __DATA,__const is also aligned, but
-	 * just in case we will round that to a page, too. 
+	 * just in case we will round that to a page, too.
 	 */
 	segDATA = getsegbynamefromheader(&_mh_execute_header, "__DATA");
 	sectDCONST = getsectbynamefromheader(&_mh_execute_header, "__DATA", "__const");
 	sectCONSTB = sectDCONST->addr;
 	sectSizeCONST = sectDCONST->size;
-
-#if !SECURE_KERNEL
-	/* doconstro is true by default, but we allow a boot-arg to disable it */
-	(void) PE_parse_boot_argn("dataconstro", &doconstro, sizeof(doconstro));
-#endif
 
 	if (doconstro) {
 		extern vm_offset_t _lastkerneldataconst;
@@ -526,25 +554,6 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 
 	vm_set_page_size();
 
-#ifndef __ARM_L1_PTW__
-	FlushPoC_Dcache();
-#endif
-	set_mmu_ttb(cpu_ttep);
-	set_mmu_ttb_alternate(cpu_ttep);
-	flush_mmu_tlb();
-#if __arm__ && __ARM_USER_PROTECT__
-	{
-		unsigned int ttbr0_val, ttbr1_val, ttbcr_val;
-		thread_t thread = current_thread();
-
-		__asm__ volatile("mrc p15,0,%0,c2,c0,0\n" : "=r"(ttbr0_val));
-		__asm__ volatile("mrc p15,0,%0,c2,c0,1\n" : "=r"(ttbr1_val));
-		__asm__ volatile("mrc p15,0,%0,c2,c0,2\n" : "=r"(ttbcr_val));
-		thread->machine.uptw_ttb = ttbr0_val;
-		thread->machine.kptw_ttb = ttbr1_val;
-		thread->machine.uptw_ttc = ttbcr_val;
-	}
-#endif
 	vm_prelink_stext = segPRELINKTEXTB;
 	vm_prelink_etext = segPRELINKTEXTB + segSizePRELINKTEXT;
 	vm_prelink_sinfo = segPRELINKINFOB;
@@ -554,7 +563,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 
 	sane_size = mem_size - (avail_start - gPhysBase);
 	max_mem = mem_size;
-	vm_kernel_slide = gVirtBase-VM_KERNEL_LINK_ADDRESS;
+	vm_kernel_slide = gVirtBase - VM_KERNEL_LINK_ADDRESS;
 	vm_kernel_stext = segTEXTB;
 	vm_kernel_etext = segTEXTB + segSizeTEXT;
 	vm_kernel_base = gVirtBase;
@@ -564,9 +573,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	vm_kernel_slid_base = segTEXTB;
 	vm_kernel_slid_top = vm_kext_top;
 
-	pmap_bootstrap((gVirtBase+MEM_SIZE_MAX+0x3FFFFF) & 0xFFC00000);
+	pmap_bootstrap((gVirtBase + MEM_SIZE_MAX + 0x3FFFFF) & 0xFFC00000);
 
 	arm_vm_prot_init(args);
+
+	vm_page_kernelcache_count = (unsigned int) (atop_64(end_kern - segLOWEST));
 
 	/*
 	 * To avoid recursing while trying to init the vm_page and object * mechanisms,
@@ -576,24 +587,38 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
 	off_end = (2 + (mem_segments * 3)) << 20;
 	off_end += (unsigned int) round_page(args->Video.v_height * args->Video.v_rowBytes);
 
-	for (off = 0, va = (gVirtBase+MEM_SIZE_MAX+0x3FFFFF) & 0xFFC00000; off < off_end; off += ARM_TT_L1_PT_SIZE) {
+	for (off = 0, va = (gVirtBase + MEM_SIZE_MAX + 0x3FFFFF) & 0xFFC00000; off < off_end; off += ARM_TT_L1_PT_SIZE) {
 		pt_entry_t   *ptp;
 		pmap_paddr_t ptp_phys;
 
 		ptp = (pt_entry_t *) phystokv(avail_start);
 		ptp_phys = (pmap_paddr_t)avail_start;
 		avail_start += ARM_PGBYTES;
+		bzero(ptp, ARM_PGBYTES);
 		pmap_init_pte_page(kernel_pmap, ptp, va + off, 2, TRUE);
 		tte = &cpu_tte[ttenum(va + off)];
-		*tte     = pa_to_tte((ptp_phys        )) | ARM_TTE_TYPE_TABLE;;
-		*(tte+1) = pa_to_tte((ptp_phys + 0x400)) | ARM_TTE_TYPE_TABLE;;
-		*(tte+2) = pa_to_tte((ptp_phys + 0x800)) | ARM_TTE_TYPE_TABLE;;
-		*(tte+3) = pa_to_tte((ptp_phys + 0xC00)) | ARM_TTE_TYPE_TABLE;;
+		*tte     = pa_to_tte((ptp_phys)) | ARM_TTE_TYPE_TABLE;
+		*(tte + 1) = pa_to_tte((ptp_phys + 0x400)) | ARM_TTE_TYPE_TABLE;
+		*(tte + 2) = pa_to_tte((ptp_phys + 0x800)) | ARM_TTE_TYPE_TABLE;
+		*(tte + 3) = pa_to_tte((ptp_phys + 0xC00)) | ARM_TTE_TYPE_TABLE;
 	}
 
+	set_mmu_ttb(cpu_ttep);
+	set_mmu_ttb_alternate(cpu_ttep);
+	flush_mmu_tlb();
+#if __arm__ && __ARM_USER_PROTECT__
+	{
+		unsigned int ttbr0_val, ttbr1_val;
+		thread_t thread = current_thread();
+
+		__asm__ volatile ("mrc p15,0,%0,c2,c0,0\n" : "=r"(ttbr0_val));
+		__asm__ volatile ("mrc p15,0,%0,c2,c0,1\n" : "=r"(ttbr1_val));
+		thread->machine.uptw_ttb = ttbr0_val;
+		thread->machine.kptw_ttb = ttbr1_val;
+	}
+#endif
 	avail_start = (avail_start + PAGE_MASK) & ~PAGE_MASK;
 
 	first_avail = avail_start;
 	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
 }
-

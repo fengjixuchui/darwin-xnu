@@ -24,10 +24,6 @@
  * Use is subject to license terms.
  */
 
-/*
- * #pragma ident	"@(#)fasttrap.c	1.26	08/04/21 SMI"
- */
-
 #include <sys/types.h>
 #include <sys/time.h>
 
@@ -211,7 +207,8 @@ static void fasttrap_proc_release(fasttrap_proc_t *);
  * 20k elements allocated, the space saved is substantial.
  */
 
-struct zone *fasttrap_tracepoint_t_zone;
+ZONE_DECLARE(fasttrap_tracepoint_t_zone, "dtrace.fasttrap_tracepoint_t",
+    sizeof(fasttrap_tracepoint_t), ZC_NONE);
 
 /*
  * APPLE NOTE: fasttrap_probe_t's are variable in size. Some quick profiling has shown
@@ -519,7 +516,7 @@ fasttrap_pid_cleanup_cb(void)
 	while (1) {
 		unsigned int later = 0;
 
-		work = atomic_and_32(&fasttrap_cleanup_work, 0);
+		work = os_atomic_xchg(&fasttrap_cleanup_work, 0, relaxed);
 		lck_mtx_unlock(&fasttrap_cleanup_mtx);
 		if (work & FASTTRAP_CLEANUP_PROVIDER) {
 			later = fasttrap_pid_cleanup_providers();
@@ -542,7 +539,7 @@ fasttrap_pid_cleanup_cb(void)
 			 * (if detach fails).
 			 */
 			if (later > 0) {
-				struct timespec t = {1, 0};
+				struct timespec t = {.tv_sec = 1, .tv_nsec = 0};
 				msleep(&fasttrap_pid_cleanup_cb, &fasttrap_cleanup_mtx, PRIBIO, "fasttrap_pid_cleanup_cb", &t);
 			}
 			else
@@ -559,12 +556,63 @@ static void
 fasttrap_pid_cleanup(uint32_t work)
 {
 	lck_mtx_lock(&fasttrap_cleanup_mtx);
-	atomic_or_32(&fasttrap_cleanup_work, work);
+	os_atomic_or(&fasttrap_cleanup_work, work, relaxed);
 	fasttrap_pid_cleanup_compute_priority();
 	wakeup(&fasttrap_pid_cleanup_cb);
 	lck_mtx_unlock(&fasttrap_cleanup_mtx);
 }
 
+static int
+fasttrap_setdebug(proc_t *p)
+{
+	LCK_MTX_ASSERT(&p->p_mlock, LCK_MTX_ASSERT_OWNED);
+
+	/*
+	 * CS_KILL and CS_HARD will cause code-signing to kill the process
+	 * when the process text is modified, so register the intent
+	 * to allow invalid access beforehand.
+	 */
+	if ((p->p_csflags & (CS_KILL|CS_HARD))) {
+		proc_unlock(p);
+		for (int i = 0; i < DTRACE_NCLIENTS; i++) {
+			dtrace_state_t *state = dtrace_state_get(i);
+			if (state == NULL)
+				continue;
+			if (state->dts_cred.dcr_cred == NULL)
+				continue;
+			/*
+			 * The get_task call flags whether the process should
+			 * be flagged to have the cs_allow_invalid call
+			 * succeed. We want the best credential that any dtrace
+			 * client has, so try all of them.
+			 */
+
+			/*
+			 * mac_proc_check_get_task() can trigger upcalls. It's
+			 * not safe to hold proc references accross upcalls, so
+			 * just drop the reference.  Given the context, it
+			 * should not be possible for the process to actually
+			 * disappear.
+			 */
+			struct proc_ident pident = proc_ident(p);
+			sprunlock(p);
+			p = PROC_NULL;
+
+			mac_proc_check_get_task(state->dts_cred.dcr_cred, &pident);
+
+			p = sprlock(pident.p_pid);
+			if (p == PROC_NULL) {
+				return (ESRCH);
+			}
+		}
+		int rc = cs_allow_invalid(p);
+		proc_lock(p);
+		if (rc == 0) {
+			return (EACCES);
+		}
+	}
+	return (0);
+}
 
 /*
  * This is called from cfork() via dtrace_fasttrap_fork(). The child
@@ -601,6 +649,12 @@ fasttrap_fork(proc_t *p, proc_t *cp)
 		printf("fasttrap_fork: sprlock(%d) returned a different proc\n", cp->p_pid);
 		return;
 	}
+
+	proc_lock(cp);
+	if (fasttrap_setdebug(cp) == ESRCH) {
+		printf("fasttrap_fork: failed to re-acquire proc\n");
+		return;
+	}
 	proc_unlock(cp);
 
 	/*
@@ -635,7 +689,6 @@ fasttrap_fork(proc_t *p, proc_t *cp)
 	 */
 	dtrace_ptss_fork(p, cp);
 
-	proc_lock(cp);
 	sprunlock(cp);
 }
 
@@ -656,9 +709,9 @@ fasttrap_exec_exit(proc_t *p)
 	 * explaining. This method is always called with the proc_lock held.
 	 * We must drop the proc_lock before calling fasttrap_provider_retire
 	 * to avoid a deadlock when it takes the bucket lock.
-	 * 
+	 *
 	 * Next, the dtrace_ptss_exec_exit function requires the sprlock
-	 * be held, but not the proc_lock. 
+	 * be held, but not the proc_lock.
 	 *
 	 * Finally, we must re-acquire the proc_lock
 	 */
@@ -922,13 +975,13 @@ fasttrap_tracepoint_disable(proc_t *p, fasttrap_probe_t *probe, uint_t index)
 			ASSERT(tp->ftt_ids != NULL);
 			idp = &tp->ftt_ids;
 			break;
-			
+
 		case DTFTP_RETURN:
 		case DTFTP_POST_OFFSETS:
 			ASSERT(tp->ftt_retids != NULL);
 			idp = &tp->ftt_retids;
 			break;
-			
+
 		default:
 			/* Fix compiler warning... */
 			idp = NULL;
@@ -1151,23 +1204,24 @@ fasttrap_pid_enable(void *arg, dtrace_id_t id, void *parg)
 	    return(0);
 	}
 
-	if ((p->p_csflags & (CS_KILL|CS_HARD))) {
+	proc_lock(p);
+	int p_pid = proc_pid(p);
+
+	rc = fasttrap_setdebug(p);
+	switch (rc) {
+	case EACCES:
 		proc_unlock(p);
-		for (i = 0; i < DTRACE_NCLIENTS; i++) {
-			dtrace_state_t *state = dtrace_state_get(i);
-			if (state == NULL)
-				continue;
-			if (state->dts_cred.dcr_cred == NULL)
-				continue;
-			mac_proc_check_get_task(state->dts_cred.dcr_cred, p);
-		}
-		rc = cs_allow_invalid(p);
-		proc_lock(p);
-		if (rc == 0) {
-			sprunlock(p);
-			cmn_err(CE_WARN, "process doesn't allow invalid code pages, failing to install fasttrap probe\n");
-			return (0);
-		}
+		sprunlock(p);
+		cmn_err(CE_WARN, "Failed to install fasttrap probe for pid %d: "
+		    "Process does not allow invalid code pages\n", p_pid);
+		return (0);
+	case ESRCH:
+		cmn_err(CE_WARN, "Failed to install fasttrap probe for pid %d: "
+		    "Failed to re-acquire process\n", p_pid);
+		return (0);
+	default:
+		assert(rc == 0);
+		break;
 	}
 
 	/*
@@ -1217,7 +1271,6 @@ fasttrap_pid_enable(void *arg, dtrace_id_t id, void *parg)
 				i--;
 			}
 
-			proc_lock(p);
 			sprunlock(p);
 
 			/*
@@ -1229,7 +1282,6 @@ fasttrap_pid_enable(void *arg, dtrace_id_t id, void *parg)
 		}
 	}
 
-	proc_lock(p);
 	sprunlock(p);
 
 	probe->ftp_enabled = 1;
@@ -1256,7 +1308,6 @@ fasttrap_pid_disable(void *arg, dtrace_id_t id, void *parg)
 	 */
 	if ((p = sprlock(probe->ftp_pid)) != PROC_NULL) {
 		// ASSERT(!(p->p_flag & SVFORK));
-		proc_unlock(p);
 	}
 
 	lck_mtx_lock(&provider->ftp_mtx);
@@ -1283,7 +1334,6 @@ fasttrap_pid_disable(void *arg, dtrace_id_t id, void *parg)
 			whack = provider->ftp_marked = 1;
 		lck_mtx_unlock(&provider->ftp_mtx);
 
-		proc_lock(p);
 		sprunlock(p);
 	} else {
 		/*
@@ -1360,8 +1410,8 @@ fasttrap_pid_destroy(void *arg, dtrace_id_t id, void *parg)
 	ASSERT(!probe->ftp_enabled);
 	ASSERT(fasttrap_total >= probe->ftp_ntps);
 
-	atomic_add_32(&fasttrap_total, -probe->ftp_ntps);
-	atomic_add_32(&fasttrap_retired, -probe->ftp_ntps);
+	os_atomic_sub(&fasttrap_total, probe->ftp_ntps, relaxed);
+	os_atomic_sub(&fasttrap_retired, probe->ftp_ntps, relaxed);
 
 	if (probe->ftp_gen + 1 >= fasttrap_mod_gen)
 		fasttrap_mod_barrier(probe->ftp_gen);
@@ -1427,7 +1477,7 @@ fasttrap_proc_lookup(pid_t pid)
 			lck_mtx_lock(&fprc->ftpc_mtx);
 			lck_mtx_unlock(&bucket->ftb_mtx);
 			fprc->ftpc_rcount++;
-			atomic_add_64(&fprc->ftpc_acount, 1);
+			os_atomic_inc(&fprc->ftpc_acount, relaxed);
 			ASSERT(fprc->ftpc_acount <= fprc->ftpc_rcount);
 			lck_mtx_unlock(&fprc->ftpc_mtx);
 
@@ -1458,7 +1508,7 @@ fasttrap_proc_lookup(pid_t pid)
 			lck_mtx_lock(&fprc->ftpc_mtx);
 			lck_mtx_unlock(&bucket->ftb_mtx);
 			fprc->ftpc_rcount++;
-			atomic_add_64(&fprc->ftpc_acount, 1);
+			os_atomic_inc(&fprc->ftpc_acount, relaxed);
 			ASSERT(fprc->ftpc_acount <= fprc->ftpc_rcount);
 			lck_mtx_unlock(&fprc->ftpc_mtx);
 
@@ -1686,7 +1736,7 @@ fasttrap_provider_free(fasttrap_provider_t *provider)
 	 * count of active providers on the associated process structure.
 	 */
 	if (!provider->ftp_retired) {
-		atomic_add_64(&provider->ftp_proc->ftpc_acount, -1);
+		os_atomic_dec(&provider->ftp_proc->ftpc_acount, relaxed);
 		ASSERT(provider->ftp_proc->ftpc_acount <
 		provider->ftp_proc->ftpc_rcount);
 	}
@@ -1716,7 +1766,7 @@ fasttrap_provider_free(fasttrap_provider_t *provider)
 	proc_lock(p);
 	p->p_dtrace_probes--;
 	proc_unlock(p);
-	
+
 	proc_rele(p);
 }
 
@@ -1765,14 +1815,14 @@ fasttrap_provider_retire(proc_t *p, const char *name, int mprov)
 	 * bucket lock therefore protects the integrity of the provider hash
 	 * table.
 	 */
-	atomic_add_64(&fp->ftp_proc->ftpc_acount, -1);
+	os_atomic_dec(&fp->ftp_proc->ftpc_acount, relaxed);
 	ASSERT(fp->ftp_proc->ftpc_acount < fp->ftp_proc->ftpc_rcount);
 
 	/*
 	 * Add this provider probes to the retired count and
 	 * make sure we don't add them twice
 	 */
-	atomic_add_32(&fasttrap_retired, fp->ftp_pcount);
+	os_atomic_add(&fasttrap_retired, fp->ftp_pcount, relaxed);
 	fp->ftp_pcount = 0;
 
 	fp->ftp_retired = 1;
@@ -1892,9 +1942,9 @@ fasttrap_add_probe(fasttrap_probe_spec_t *pdata)
 			    pdata->ftps_mod, pdata->ftps_func, name_str) != 0)
 				continue;
 
-			atomic_add_32(&fasttrap_total, 1);
+			os_atomic_inc(&fasttrap_total, relaxed);
 			if (fasttrap_total > fasttrap_max) {
-				atomic_add_32(&fasttrap_total, -1);
+				os_atomic_dec(&fasttrap_total, relaxed);
 				goto no_mem;
 			}
 			provider->ftp_pcount++;
@@ -1908,7 +1958,7 @@ fasttrap_add_probe(fasttrap_probe_spec_t *pdata)
 			pp->ftp_pid = pdata->ftps_pid;
 			pp->ftp_ntps = 1;
 
-			tp = zalloc(fasttrap_tracepoint_t_zone);			
+			tp = zalloc(fasttrap_tracepoint_t_zone);
 			bzero(tp, sizeof (fasttrap_tracepoint_t));
 
 			tp->ftt_proc = provider->ftp_proc;
@@ -1935,10 +1985,10 @@ fasttrap_add_probe(fasttrap_probe_spec_t *pdata)
 
 	} else if (dtrace_probe_lookup(provider->ftp_provid, pdata->ftps_mod,
 	    pdata->ftps_func, name) == 0) {
-		atomic_add_32(&fasttrap_total, pdata->ftps_noffs);
+		os_atomic_add(&fasttrap_total, pdata->ftps_noffs, relaxed);
 
 		if (fasttrap_total > fasttrap_max) {
-			atomic_add_32(&fasttrap_total, -pdata->ftps_noffs);
+			os_atomic_sub(&fasttrap_total, pdata->ftps_noffs, relaxed);
 			goto no_mem;
 		}
 
@@ -1953,7 +2003,7 @@ fasttrap_add_probe(fasttrap_probe_spec_t *pdata)
 			if (pdata->ftps_offs[i] > pdata->ftps_offs[i - 1])
 				continue;
 
-			atomic_add_32(&fasttrap_total, -pdata->ftps_noffs);
+			os_atomic_sub(&fasttrap_total, pdata->ftps_noffs, relaxed);
 			goto no_mem;
 		}
 		provider->ftp_pcount += pdata->ftps_noffs;
@@ -1985,7 +2035,7 @@ fasttrap_add_probe(fasttrap_probe_spec_t *pdata)
 			 * this field is simply initialized to 0 on its way
 			 * into the kernel.
 			 */
-			
+
 			tp->ftt_fntype = pdata->ftps_arch_subinfo;
 #endif
 			pp->ftp_tps[i].fit_tp = tp;
@@ -2177,7 +2227,7 @@ fasttrap_meta_create_probe(void *arg, void *parg,
 
 #if 0
 	/*
-	 * APPLE NOTE: This is hideously expensive. See note in 
+	 * APPLE NOTE: This is hideously expensive. See note in
 	 * fasttrap_meta_provide() for why we can get away without
 	 * checking here.
 	 */
@@ -2191,10 +2241,10 @@ fasttrap_meta_create_probe(void *arg, void *parg,
 	ntps = dhpb->dthpb_noffs + dhpb->dthpb_nenoffs;
 	ASSERT(ntps > 0);
 
-	atomic_add_32(&fasttrap_total, ntps);
+	os_atomic_add(&fasttrap_total, ntps, relaxed);
 
 	if (fasttrap_total > fasttrap_max) {
-		atomic_add_32(&fasttrap_total, -ntps);
+		os_atomic_sub(&fasttrap_total, ntps, relaxed);
 		lck_mtx_unlock(&provider->ftp_cmtx);
 		return;
 	}
@@ -2239,7 +2289,7 @@ fasttrap_meta_create_probe(void *arg, void *parg,
 		 * All ARM and ARM64 probes are zero offset. We need to zero out the
 		 * thumb bit because we still support 32bit user processes.
 		 * On 64bit user processes, bit zero won't be set anyway.
-		 */		
+		 */
 		tp->ftt_pc = (dhpb->dthpb_base + (int64_t)dhpb->dthpb_offs[i]) & ~0x1UL;
 		tp->ftt_fntype = FASTTRAP_FN_USDT;
 #else
@@ -2277,7 +2327,7 @@ fasttrap_meta_create_probe(void *arg, void *parg,
 		 * All ARM and ARM64 probes are zero offset. We need to zero out the
 		 * thumb bit because we still support 32bit user processes.
 		 * On 64bit user processes, bit zero won't be set anyway.
-		 */				
+		 */
 		tp->ftt_pc = (dhpb->dthpb_base + (int64_t)dhpb->dthpb_enoffs[j]) & ~0x1UL;
 		tp->ftt_fntype = FASTTRAP_FN_USDT;
 #else
@@ -2365,6 +2415,48 @@ fasttrap_validatestr(char const* str, size_t maxlen) {
 	return utf8_validatestr((unsigned const char*) str, len);
 }
 
+/*
+ * Checks that provided credentials are allowed to debug target process.
+ */
+static int
+fasttrap_check_cred_priv(cred_t *cr, proc_t *p)
+{
+	int err = 0;
+
+	/* Only root can use DTrace. */
+	if (!kauth_cred_issuser(cr)) {
+		err = EPERM;
+		goto out;
+	}
+
+	/* Process is marked as no attach. */
+	if (ISSET(p->p_lflag, P_LNOATTACH)) {
+		err = EBUSY;
+		goto out;
+	}
+
+#if CONFIG_MACF
+	/* Check with MAC framework when enabled. */
+	struct proc_ident cur_ident = proc_ident(current_proc());
+	struct proc_ident p_ident = proc_ident(p);
+
+	/* Do not hold ref to proc here to avoid deadlock. */
+	proc_rele(p);
+	err = mac_proc_check_debug(&cur_ident, cr, &p_ident);
+
+	if (proc_find_ident(&p_ident) == PROC_NULL) {
+		err = ESRCH;
+		goto out_no_proc;
+	}
+#endif /* CONFIG_MACF */
+
+out:
+	proc_rele(p);
+
+out_no_proc:
+	return err;
+}
+
 /*ARGSUSED*/
 static int
 fasttrap_ioctl(dev_t dev, u_long cmd, user_addr_t arg, int md, cred_t *cr, int *rv)
@@ -2436,15 +2528,11 @@ fasttrap_ioctl(dev_t dev, u_long cmd, user_addr_t arg, int md, cred_t *cr, int *
 				ret = ESRCH;
 				goto err;
 			}
-			// proc_lock(p);
-			// FIXME! How is this done on OS X?
-			// if ((ret = priv_proc_cred_perm(cr, p, NULL,
-			//     VREAD | VWRITE)) != 0) {
-			// 	mutex_exit(&p->p_lock);
-			// 	return (ret);
-			// }
-			// proc_unlock(p);
-			proc_rele(p);
+
+			ret = fasttrap_check_cred_priv(cr, p);
+			if (ret != 0) {
+				goto err;
+			}
 		}
 
 		ret = fasttrap_add_probe(probe);
@@ -2458,7 +2546,7 @@ err:
 		fasttrap_instr_query_t instr;
 		fasttrap_tracepoint_t *tp;
 		uint_t index;
-		// int ret;
+		int ret;
 
 		if (copyin(arg, &instr, sizeof (instr)) != 0)
 			return (EFAULT);
@@ -2476,15 +2564,11 @@ err:
 					proc_rele(p);
 				return (ESRCH);
 			}
-			//proc_lock(p);
-			// FIXME! How is this done on OS X?
-			// if ((ret = priv_proc_cred_perm(cr, p, NULL,
-			//     VREAD)) != 0) {
-			// 	mutex_exit(&p->p_lock);
-			// 	return (ret);
-			// }
-			// proc_unlock(p);
-			proc_rele(p);
+
+			ret = fasttrap_check_cred_priv(cr, p);
+			if (ret != 0) {
+				return (ret);
+			}
 		}
 
 		index = FASTTRAP_TPOINTS_INDEX(instr.ftiq_pid, instr.ftiq_pc);
@@ -2613,7 +2697,7 @@ fasttrap_attach(void)
 	    &fasttrap_meta_id);
 }
 
-static int 
+static int
 _fasttrap_open(dev_t dev, int flags, int devtype, struct proc *p)
 {
 #pragma unused(dev, flags, devtype, p)
@@ -2624,12 +2708,13 @@ static int
 _fasttrap_ioctl(dev_t dev, u_long cmd, caddr_t data, int fflag, struct proc *p)
 {
 	int err, rv = 0;
-    user_addr_t uaddrp;
+	user_addr_t uaddrp;
 
-    if (proc_is64bit(p))
-        uaddrp = *(user_addr_t *)data;
-    else
-        uaddrp = (user_addr_t) *(uint32_t *)data;
+	if (proc_is64bit(p)) {
+		uaddrp = *(user_addr_t *)data;
+	} else {
+		uaddrp = (user_addr_t) *(uint32_t *)data;
+	}
 
 	err = fasttrap_ioctl(dev, cmd, uaddrp, fflag, CRED(), &rv);
 
@@ -2640,7 +2725,7 @@ _fasttrap_ioctl(dev_t dev, u_long cmd, caddr_t data, int fflag, struct proc *p)
 	} else if (rv != 0) {
 		ASSERT( (rv & 0xfff00000) == 0 );
 		return (((rv & 0xfffff) << 12)); /* ioctl returns -1 and errno set to a return value >= 4096 */
-	} else 
+	} else
 		return 0;
 }
 
@@ -2648,27 +2733,20 @@ static int fasttrap_inited = 0;
 
 #define FASTTRAP_MAJOR  -24 /* let the kernel pick the device number */
 
-/*
- * A struct describing which functions will get invoked for certain
- * actions.
- */
-
-static struct cdevsw fasttrap_cdevsw =
+static const struct cdevsw fasttrap_cdevsw =
 {
-	_fasttrap_open,         /* open */
-	eno_opcl,               /* close */
-	eno_rdwrt,              /* read */
-	eno_rdwrt,              /* write */
-	_fasttrap_ioctl,        /* ioctl */
-	(stop_fcn_t *)nulldev,  /* stop */
-	(reset_fcn_t *)nulldev, /* reset */
-	NULL,                   /* tty's */
-	eno_select,             /* select */
-	eno_mmap,               /* mmap */
-	eno_strat,              /* strategy */
-	eno_getc,               /* getc */
-	eno_putc,               /* putc */
-	0                       /* type */
+	.d_open = _fasttrap_open,
+	.d_close = eno_opcl,
+	.d_read = eno_rdwrt,
+	.d_write = eno_rdwrt,
+	.d_ioctl = _fasttrap_ioctl,
+	.d_stop = (stop_fcn_t *)nulldev,
+	.d_reset = (reset_fcn_t *)nulldev,
+	.d_select = eno_select,
+	.d_mmap = eno_mmap,
+	.d_strategy = eno_strat,
+	.d_reserved_1 = eno_getc,
+	.d_reserved_2 = eno_putc,
 };
 
 void fasttrap_init(void);
@@ -2697,32 +2775,22 @@ fasttrap_init( void )
 		}
 
 		/*
-		 * Allocate the fasttrap_tracepoint_t zone
-		 */
-		fasttrap_tracepoint_t_zone = zinit(sizeof(fasttrap_tracepoint_t),
-						   1024 * sizeof(fasttrap_tracepoint_t),
-						   sizeof(fasttrap_tracepoint_t),
-						   "dtrace.fasttrap_tracepoint_t");
-
-		/*
 		 * fasttrap_probe_t's are variable in size. We use an array of zones to
 		 * cover the most common sizes.
 		 */
 		int i;
 		for (i=1; i<FASTTRAP_PROBE_T_ZONE_MAX_TRACEPOINTS; i++) {
-			size_t zone_element_size = offsetof(fasttrap_probe_t, ftp_tps[i]);
-			fasttrap_probe_t_zones[i] = zinit(zone_element_size,
-							  1024 * zone_element_size,
-							  zone_element_size,
-							  fasttrap_probe_t_zone_names[i]);
+			fasttrap_probe_t_zones[i] =
+			    zone_create(fasttrap_probe_t_zone_names[i],
+				    offsetof(fasttrap_probe_t, ftp_tps[i]), ZC_NONE);
 		}
 
-		
+
 		/*
 		 * Create the fasttrap lock group. Must be done before fasttrap_attach()!
 		 */
 		fasttrap_lck_attr = lck_attr_alloc_init();
-		fasttrap_lck_grp_attr= lck_grp_attr_alloc_init();		
+		fasttrap_lck_grp_attr= lck_grp_attr_alloc_init();
 		fasttrap_lck_grp = lck_grp_alloc_init("fasttrap",  fasttrap_lck_grp_attr);
 
 		/*

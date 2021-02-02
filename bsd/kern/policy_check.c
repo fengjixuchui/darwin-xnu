@@ -1,5 +1,5 @@
 #include <sys/param.h>
-#include <sys/systm.h>		/* XXX printf() */
+#include <sys/systm.h>          /* XXX printf() */
 
 #include <sys/types.h>
 #include <sys/fcntl.h>
@@ -14,7 +14,7 @@
 #include <security/mac_policy.h>
 
 #include <libkern/section_keywords.h>
-#include <libkern/OSDebug.h>	/* OSBPrintBacktrace */
+#include <libkern/OSDebug.h>    /* OSBPrintBacktrace */
 
 
 /* forward declaration; see bsd_init.c */
@@ -27,16 +27,16 @@ int get_thread_lock_count(thread_t th);         /* forced forward */
  * Note:	CHECK_POLICY_CHECK is probably not very useful unless you
  *		are kernel debugging and set a breakpoint.
  */
-#define	CHECK_POLICY_CHECK	0x00000001	/* Check on calls */
-#define	CHECK_POLICY_FAIL	0x00000002	/* EPERM on fails */
-#define	CHECK_POLICY_BACKTRACE	0x00000004	/* Show call stack on fails */
-#define	CHECK_POLICY_PANIC	0x00000008	/* Panic on fails */
-#define	CHECK_POLICY_PERIODIC	0x00000010	/* Show fails periodically */
+#define CHECK_POLICY_CHECK      0x00000001      /* Check on calls */
+#define CHECK_POLICY_FAIL       0x00000002      /* EPERM on fails */
+#define CHECK_POLICY_BACKTRACE  0x00000004      /* Show call stack on fails */
+#define CHECK_POLICY_PANIC      0x00000008      /* Panic on fails */
+#define CHECK_POLICY_PERIODIC   0x00000010      /* Show fails periodically */
 
 static int policy_flags = 0;
 
 
-#define CHECK_SET_HOOK(x)	.mpo_##x = (mpo_##x##_t *)common_hook,
+#define CHECK_SET_HOOK(x)       .mpo_##x = (mpo_##x##_t *)common_hook,
 
 /*
  * Init; currently, we only print our arrival notice.
@@ -56,8 +56,8 @@ hook_policy_initbsd(struct mac_policy_conf *mpc)
 
 
 /* Implementation */
-#define	CLASS_PERIOD_LIMIT	10000
-#define	CLASS_PERIOD_MULT	20
+#define CLASS_PERIOD_LIMIT      10000
+#define CLASS_PERIOD_MULT       20
 
 static int policy_check_event = 1;
 static int policy_check_period = 1;
@@ -67,16 +67,17 @@ static int policy_check_next = CLASS_PERIOD_MULT;
 static int
 common_hook(void)
 {
-	int	i;
-	int	rv = 0;
+	int     i;
+	int     rv = 0;
 
 	if ((i = get_thread_lock_count(current_thread())) != 0) {
 		/*
 		 * fail the MACF check if we hold a lock; this assumes a
 		 * a non-void (authorization) MACF hook.
 		 */
-		if (policy_flags & CHECK_POLICY_FAIL)
+		if (policy_flags & CHECK_POLICY_FAIL) {
 			rv = EPERM;
+		}
 
 		/*
 		 * display a backtrace if we hold a lock and we are not
@@ -84,24 +85,24 @@ common_hook(void)
 		 */
 		if ((policy_flags & (CHECK_POLICY_BACKTRACE | CHECK_POLICY_PANIC)) == CHECK_POLICY_BACKTRACE) {
 			if (policy_flags & CHECK_POLICY_PERIODIC) {
-			    /* at exponentially increasing intervals */
-			    if (!(policy_check_event % policy_check_period)) {
-				if (policy_check_event <= policy_check_next || policy_check_period == CLASS_PERIOD_LIMIT) {
-					/*
-					 * According to Derek, we could
-					 * technically get a symbolicated name
-					 * here, if we refactered some code
-					 * and set the "keepsyms=1" boot
-					 * argument...
-					 */
-					OSReportWithBacktrace("calling MACF hook with mutex count %d (event %d) ", i, policy_check_event);
+				/* at exponentially increasing intervals */
+				if (!(policy_check_event % policy_check_period)) {
+					if (policy_check_event <= policy_check_next || policy_check_period == CLASS_PERIOD_LIMIT) {
+						/*
+						 * According to Derek, we could
+						 * technically get a symbolicated name
+						 * here, if we refactered some code
+						 * and set the "keepsyms=1" boot
+						 * argument...
+						 */
+						OSReportWithBacktrace("calling MACF hook with mutex count %d (event %d) ", i, policy_check_event);
+					}
+				} else {
+					if (policy_check_period < CLASS_PERIOD_LIMIT) {
+						policy_check_next *= CLASS_PERIOD_MULT;
+						policy_check_period *= CLASS_PERIOD_MULT;
+					}
 				}
-			    } else {
-				if (policy_check_period < CLASS_PERIOD_LIMIT) {
-					policy_check_next *= CLASS_PERIOD_MULT;
-					policy_check_period *= CLASS_PERIOD_MULT;
-				}
-			    }
 			} else {
 				/* always */
 				OSReportWithBacktrace("calling MACF hook with mutex count %d (event %d) ", i, policy_check_event);
@@ -109,8 +110,9 @@ common_hook(void)
 		}
 
 		/* Panic */
-		if (policy_flags & CHECK_POLICY_PANIC)
+		if (policy_flags & CHECK_POLICY_PANIC) {
 			panic("calling MACF hook with mutex count %d\n", i);
+		}
 
 		/* count for non-fatal tracing */
 		policy_check_event++;
@@ -119,7 +121,7 @@ common_hook(void)
 	return rv;
 }
 
-#if (MAC_POLICY_OPS_VERSION != 55)
+#if (MAC_POLICY_OPS_VERSION != 69)
 # error "struct mac_policy_ops doesn't match definition in mac_policy.h"
 #endif
 /*
@@ -132,10 +134,10 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(audit_check_postselect)
 	CHECK_SET_HOOK(audit_check_preselect)
 
-	CHECK_SET_HOOK(bpfdesc_label_associate)
-	CHECK_SET_HOOK(bpfdesc_label_destroy)
-	CHECK_SET_HOOK(bpfdesc_label_init)
-	CHECK_SET_HOOK(bpfdesc_check_receive)
+	.mpo_reserved01 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved02 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved03 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved04 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(cred_check_label_update_execve)
 	CHECK_SET_HOOK(cred_check_label_update)
@@ -175,32 +177,29 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(file_label_init)
 	CHECK_SET_HOOK(file_label_destroy)
 	CHECK_SET_HOOK(file_label_associate)
+	CHECK_SET_HOOK(file_notify_close)
 
-	CHECK_SET_HOOK(ifnet_check_label_update)
-	CHECK_SET_HOOK(ifnet_check_transmit)
-	CHECK_SET_HOOK(ifnet_label_associate)
-	CHECK_SET_HOOK(ifnet_label_copy)
-	CHECK_SET_HOOK(ifnet_label_destroy)
-	CHECK_SET_HOOK(ifnet_label_externalize)
-	CHECK_SET_HOOK(ifnet_label_init)
-	CHECK_SET_HOOK(ifnet_label_internalize)
-	CHECK_SET_HOOK(ifnet_label_update)
-	CHECK_SET_HOOK(ifnet_label_recycle)
-
-	CHECK_SET_HOOK(inpcb_check_deliver)
-	CHECK_SET_HOOK(inpcb_label_associate)
-	CHECK_SET_HOOK(inpcb_label_destroy)
-	CHECK_SET_HOOK(inpcb_label_init)
-	CHECK_SET_HOOK(inpcb_label_recycle)
-	CHECK_SET_HOOK(inpcb_label_update)
-
-	CHECK_SET_HOOK(iokit_check_device)
-
-	CHECK_SET_HOOK(ipq_label_associate)
-	CHECK_SET_HOOK(ipq_label_compare)
-	CHECK_SET_HOOK(ipq_label_destroy)
-	CHECK_SET_HOOK(ipq_label_init)
-	CHECK_SET_HOOK(ipq_label_update)
+	.mpo_reserved06 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved07 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved08 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved09 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved10 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved11 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved12 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved13 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved14 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved15 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved16 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved17 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved18 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved19 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved20 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved21 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved22 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved23 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved24 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved25 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved26 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(file_check_library_validation)
 
@@ -213,17 +212,17 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(vnode_notify_setutimes)
 	CHECK_SET_HOOK(vnode_notify_truncate)
 
-	CHECK_SET_HOOK(mbuf_label_associate_bpfdesc)
-	CHECK_SET_HOOK(mbuf_label_associate_ifnet)
-	CHECK_SET_HOOK(mbuf_label_associate_inpcb)
-	CHECK_SET_HOOK(mbuf_label_associate_ipq)
-	CHECK_SET_HOOK(mbuf_label_associate_linklayer)
-	CHECK_SET_HOOK(mbuf_label_associate_multicast_encap)
-	CHECK_SET_HOOK(mbuf_label_associate_netlayer)
-	CHECK_SET_HOOK(mbuf_label_associate_socket)
-	CHECK_SET_HOOK(mbuf_label_copy)
-	CHECK_SET_HOOK(mbuf_label_destroy)
-	CHECK_SET_HOOK(mbuf_label_init)
+	.mpo_reserved27 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved28 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved29 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved30 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved31 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved32 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved33 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved34 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved35 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved36 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved37 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(mount_check_fsctl)
 	CHECK_SET_HOOK(mount_check_getattr)
@@ -239,24 +238,24 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(mount_label_init)
 	CHECK_SET_HOOK(mount_label_internalize)
 
-	CHECK_SET_HOOK(netinet_fragment)
-	CHECK_SET_HOOK(netinet_icmp_reply)
-	CHECK_SET_HOOK(netinet_tcp_reply)
+	.mpo_reserved38 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved39 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved40 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(pipe_check_ioctl)
 	CHECK_SET_HOOK(pipe_check_kqfilter)
-	CHECK_SET_HOOK(pipe_check_label_update)
+	.mpo_reserved41 = (mpo_reserved_hook_t *)common_hook,
 	CHECK_SET_HOOK(pipe_check_read)
 	CHECK_SET_HOOK(pipe_check_select)
 	CHECK_SET_HOOK(pipe_check_stat)
 	CHECK_SET_HOOK(pipe_check_write)
 	CHECK_SET_HOOK(pipe_label_associate)
-	CHECK_SET_HOOK(pipe_label_copy)
+	.mpo_reserved42 = (mpo_reserved_hook_t *)common_hook,
 	CHECK_SET_HOOK(pipe_label_destroy)
-	CHECK_SET_HOOK(pipe_label_externalize)
+	.mpo_reserved43 = (mpo_reserved_hook_t *)common_hook,
 	CHECK_SET_HOOK(pipe_label_init)
-	CHECK_SET_HOOK(pipe_label_internalize)
-	CHECK_SET_HOOK(pipe_label_update)
+	.mpo_reserved44 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved45 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(policy_destroy)
 	/* special hooks for policy init's */
@@ -269,8 +268,8 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(vnode_check_rename)
 	CHECK_SET_HOOK(kext_check_query)
 	CHECK_SET_HOOK(proc_notify_exec_complete)
-	.mpo_reserved5 = (mpo_reserved_hook_t *)common_hook,
-	.mpo_reserved6 = (mpo_reserved_hook_t *)common_hook,
+	CHECK_SET_HOOK(proc_notify_cs_invalidated)
+	CHECK_SET_HOOK(proc_check_syscall_unix)
 	CHECK_SET_HOOK(proc_check_expose_task)
 	CHECK_SET_HOOK(proc_check_set_host_special_port)
 	CHECK_SET_HOOK(proc_check_set_host_exception_port)
@@ -282,9 +281,9 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(exc_action_label_update)
 
 	CHECK_SET_HOOK(vnode_check_trigger_resolve)
-	.mpo_reserved1 = (mpo_reserved_hook_t *)common_hook,
-	.mpo_reserved2 = (mpo_reserved_hook_t *)common_hook,
-	.mpo_reserved3 = (mpo_reserved_hook_t *)common_hook,
+	CHECK_SET_HOOK(mount_check_mount_late)
+	CHECK_SET_HOOK(mount_check_snapshot_mount)
+	CHECK_SET_HOOK(vnode_notify_reclaim)
 	CHECK_SET_HOOK(skywalk_flow_check_connect)
 	CHECK_SET_HOOK(skywalk_flow_check_listen)
 
@@ -320,39 +319,39 @@ const static struct mac_policy_ops policy_ops = {
 	CHECK_SET_HOOK(proc_check_setlcid)
 	CHECK_SET_HOOK(proc_check_signal)
 	CHECK_SET_HOOK(proc_check_wait)
-	CHECK_SET_HOOK(proc_label_destroy)
-	CHECK_SET_HOOK(proc_label_init)
+	CHECK_SET_HOOK(proc_check_dump_core)
+	CHECK_SET_HOOK(proc_check_remote_thread_create)
 
 	CHECK_SET_HOOK(socket_check_accept)
 	CHECK_SET_HOOK(socket_check_accepted)
 	CHECK_SET_HOOK(socket_check_bind)
 	CHECK_SET_HOOK(socket_check_connect)
 	CHECK_SET_HOOK(socket_check_create)
-	CHECK_SET_HOOK(socket_check_deliver)
-	CHECK_SET_HOOK(socket_check_kqfilter)
-	CHECK_SET_HOOK(socket_check_label_update)
+	.mpo_reserved46 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved47 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved48 = (mpo_reserved_hook_t *)common_hook,
 	CHECK_SET_HOOK(socket_check_listen)
 	CHECK_SET_HOOK(socket_check_receive)
 	CHECK_SET_HOOK(socket_check_received)
-	CHECK_SET_HOOK(socket_check_select)
+	.mpo_reserved49 = (mpo_reserved_hook_t *)common_hook,
 	CHECK_SET_HOOK(socket_check_send)
 	CHECK_SET_HOOK(socket_check_stat)
 	CHECK_SET_HOOK(socket_check_setsockopt)
 	CHECK_SET_HOOK(socket_check_getsockopt)
-	CHECK_SET_HOOK(socket_label_associate_accept)
-	CHECK_SET_HOOK(socket_label_associate)
-	CHECK_SET_HOOK(socket_label_copy)
-	CHECK_SET_HOOK(socket_label_destroy)
-	CHECK_SET_HOOK(socket_label_externalize)
-	CHECK_SET_HOOK(socket_label_init)
-	CHECK_SET_HOOK(socket_label_internalize)
-	CHECK_SET_HOOK(socket_label_update)
 
-	CHECK_SET_HOOK(socketpeer_label_associate_mbuf)
-	CHECK_SET_HOOK(socketpeer_label_associate_socket)
-	CHECK_SET_HOOK(socketpeer_label_destroy)
-	CHECK_SET_HOOK(socketpeer_label_externalize)
-	CHECK_SET_HOOK(socketpeer_label_init)
+	.mpo_reserved50 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved51 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved52 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved53 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved54 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved55 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved56 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved57 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved58 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved59 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved60 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved61 = (mpo_reserved_hook_t *)common_hook,
+	.mpo_reserved62 = (mpo_reserved_hook_t *)common_hook,
 
 	CHECK_SET_HOOK(system_check_acct)
 	CHECK_SET_HOOK(system_check_audit)
@@ -471,6 +470,8 @@ const static struct mac_policy_ops policy_ops = {
 
 	CHECK_SET_HOOK(iokit_check_set_properties)
 
+	CHECK_SET_HOOK(vnode_check_supplemental_signature)
+
 	CHECK_SET_HOOK(vnode_check_searchfs)
 
 	CHECK_SET_HOOK(priv_check)
@@ -503,7 +504,6 @@ const static struct mac_policy_ops policy_ops = {
 
 	CHECK_SET_HOOK(vnode_find_sigs)
 
-
 	CHECK_SET_HOOK(kext_check_load)
 	CHECK_SET_HOOK(kext_check_unload)
 
@@ -521,10 +521,10 @@ const static struct mac_policy_ops policy_ops = {
 static SECURITY_READ_ONLY_LATE(struct mac_policy_conf) policy_conf = {
 	.mpc_name               = "CHECK",
 	.mpc_fullname           = "Check Assumptions Policy",
-	.mpc_field_off          = NULL,		/* no label slot */
-	.mpc_labelnames         = NULL,		/* no policy label names */
-	.mpc_labelname_count    = 0,		/* count of label names is 0 */
-	.mpc_ops                = &policy_ops,	/* policy operations */
+	.mpc_field_off          = NULL,         /* no label slot */
+	.mpc_labelnames         = NULL,         /* no policy label names */
+	.mpc_labelname_count    = 0,            /* count of label names is 0 */
+	.mpc_ops                = &policy_ops,  /* policy operations */
 	.mpc_loadtime_flags     = 0,
 	.mpc_runtime_flags      = 0,
 };
@@ -540,8 +540,9 @@ errno_t
 check_policy_init(int flags)
 {
 	/* Only instantiate the module if we have been asked to do checking */
-	if (!flags)
+	if (!flags) {
 		return 0;
+	}
 
 	policy_flags = flags;
 

@@ -31,6 +31,9 @@
 
 #include <kern/kcdata.h>
 #include <mach/mach_types.h>
+#ifdef XNU_KERNEL_PRIVATE
+#include <libkern/zlib.h>
+#endif
 
 /*
  * Do not use these macros!
@@ -52,38 +55,86 @@
 #define KCDATA_ITEM_DATA_PTR(item)      kcdata_iter_payload(KCDATA_ITEM_ITER(item))
 #define KCDATA_ITEM_FIND_TYPE(itemx, type) (kcdata_iter_find_type(KCDATA_ITEM_ITER(itemx), type).item)
 #define kcdata_get_container_type(buffer) kcdata_iter_container_type(KCDATA_ITEM_ITER(buffer))
-#define kcdata_get_data_with_desc(buf,desc,data) kcdata_iter_get_data_with_desc(KCDATA_ITEM_ITER(buf),desc,data,NULL)
+#define kcdata_get_data_with_desc(buf, desc, data) kcdata_iter_get_data_with_desc(KCDATA_ITEM_ITER(buf),desc,data,NULL)
 /* Do not use these macros! */
 
-#ifdef KERNEL
+__options_decl(kcd_compression_type_t, uint64_t, {
+	KCDCT_NONE = 0x00,
+	KCDCT_ZLIB = 0x01,
+});
 
+#ifdef KERNEL
 #ifdef XNU_KERNEL_PRIVATE
 
-/* Structure to save information about corpse data */
+__options_decl(kcd_cd_flag_t, uint64_t, {
+	KCD_CD_FLAG_IN_MARK  = 0x01,
+	KCD_CD_FLAG_FINALIZE = 0x02,
+});
+
+/* Structure to save zstream and other compression metadata */
+struct kcdata_compress_descriptor {
+	z_stream kcd_cd_zs;
+	void *kcd_cd_base;
+	uint64_t kcd_cd_offset;
+	size_t kcd_cd_maxoffset;
+	uint64_t kcd_cd_mark_begin;
+	kcd_cd_flag_t kcd_cd_flags;
+	kcd_compression_type_t kcd_cd_compression_type;
+	void (*kcd_cd_memcpy_f)(void *, const void *, size_t);
+	mach_vm_address_t kcd_cd_totalout_addr;
+	mach_vm_address_t kcd_cd_totalin_addr;
+};
+
+/*
+ * Various, compression algorithm agnostic flags for controlling writes to the
+ * output buffer.
+ */
+enum kcdata_compression_flush {
+	/*
+	 * Hint that no flush is needed because more data is expected. Doesn't
+	 * guarantee that no data will be written to the output buffer, since the
+	 * underlying algorithm may decide that it's running out of space and may
+	 * flush to the output buffer.
+	 */
+	KCDCF_NO_FLUSH,
+	/*
+	 * Hint to flush all internal buffers to the output buffers.
+	 */
+	KCDCF_SYNC_FLUSH,
+	/*
+	 * Hint that this is going to be the last call to the compression function,
+	 * so flush all output buffers and mark state as finished.
+	 */
+	KCDCF_FINISH,
+};
+
+/* Structure to save information about kcdata */
 struct kcdata_descriptor {
 	uint32_t            kcd_length;
 	uint16_t kcd_flags;
 #define KCFLAG_USE_MEMCOPY 0x0
 #define KCFLAG_USE_COPYOUT 0x1
 #define KCFLAG_NO_AUTO_ENDBUFFER 0x2
+#define KCFLAG_USE_COMPRESSION 0x4
 	uint16_t kcd_user_flags; /* reserved for subsystems using kcdata */
 	mach_vm_address_t kcd_addr_begin;
 	mach_vm_address_t kcd_addr_end;
+	struct kcdata_compress_descriptor kcd_comp_d;
 };
 
 typedef struct kcdata_descriptor * kcdata_descriptor_t;
 
 kcdata_descriptor_t kcdata_memory_alloc_init(mach_vm_address_t crash_data_p, unsigned data_type, unsigned size, unsigned flags);
 kern_return_t kcdata_memory_static_init(
-    kcdata_descriptor_t data, mach_vm_address_t buffer_addr_p, unsigned data_type, unsigned size, unsigned flags);
+	kcdata_descriptor_t data, mach_vm_address_t buffer_addr_p, unsigned data_type, unsigned size, unsigned flags);
 kern_return_t kcdata_memory_destroy(kcdata_descriptor_t data);
 kern_return_t
 kcdata_add_container_marker(kcdata_descriptor_t data, uint32_t header_type, uint32_t container_type, uint64_t identifier);
 kern_return_t kcdata_add_type_definition(kcdata_descriptor_t data,
-                                         uint32_t type_id,
-                                         char * type_name,
-                                         struct kcdata_subtype_descriptor * elements_array_addr,
-                                         uint32_t elements_count);
+    uint32_t type_id,
+    char * type_name,
+    struct kcdata_subtype_descriptor * elements_array_addr,
+    uint32_t elements_count);
 
 kern_return_t kcdata_add_uint64_with_description(kcdata_descriptor_t crashinfo, uint64_t data, const char * description);
 kern_return_t kcdata_add_uint32_with_description(kcdata_descriptor_t crashinfo, uint32_t data, const char * description);
@@ -92,6 +143,14 @@ kern_return_t kcdata_undo_add_container_begin(kcdata_descriptor_t data);
 
 kern_return_t kcdata_write_buffer_end(kcdata_descriptor_t data);
 void *kcdata_memory_get_begin_addr(kcdata_descriptor_t data);
+kern_return_t kcdata_init_compress(kcdata_descriptor_t, int hdr_tag, void (*memcpy_f)(void *, const void *, size_t), uint64_t type);
+kern_return_t kcdata_push_data(kcdata_descriptor_t data, uint32_t type, uint32_t size, const void *input_data);
+kern_return_t kcdata_push_array(kcdata_descriptor_t data, uint32_t type_of_element, uint32_t size_of_element, uint32_t count, const void *input_data);
+kern_return_t kcdata_compress_memory_addr(kcdata_descriptor_t data, void *ptr);
+kern_return_t kcdata_finish_compression(kcdata_descriptor_t data);
+void kcdata_compression_window_open(kcdata_descriptor_t data);
+kern_return_t kcdata_compression_window_close(kcdata_descriptor_t data);
+void kcd_finalize_compression(kcdata_descriptor_t data);
 
 #else /* XNU_KERNEL_PRIVATE */
 
@@ -101,11 +160,12 @@ typedef void * kcdata_descriptor_t;
 
 uint32_t kcdata_estimate_required_buffer_size(uint32_t num_items, uint32_t payload_size);
 uint64_t kcdata_memory_get_used_bytes(kcdata_descriptor_t kcd);
+uint64_t kcdata_memory_get_uncompressed_bytes(kcdata_descriptor_t kcd);
 kern_return_t kcdata_memcpy(kcdata_descriptor_t data, mach_vm_address_t dst_addr, const void * src_addr, uint32_t size);
 kern_return_t kcdata_bzero(kcdata_descriptor_t data, mach_vm_address_t dst_addr, uint32_t size);
 kern_return_t kcdata_get_memory_addr(kcdata_descriptor_t data, uint32_t type, uint32_t size, mach_vm_address_t * user_addr);
 kern_return_t kcdata_get_memory_addr_for_array(
-    kcdata_descriptor_t data, uint32_t type_of_element, uint32_t size_of_element, uint32_t count, mach_vm_address_t * user_addr);
+	kcdata_descriptor_t data, uint32_t type_of_element, uint32_t size_of_element, uint32_t count, mach_vm_address_t * user_addr);
 
 #endif /* KERNEL */
 #endif /* _KERN_CDATA_H_ */

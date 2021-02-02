@@ -2,7 +2,7 @@
  * Copyright (c) 2000-2016 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
@@ -11,10 +11,10 @@
  * unlawful or unlicensed copies of an Apple operating system, or to
  * circumvent, violate, or enable the circumvention or violation of, any
  * terms of an Apple operating system software license agreement.
- * 
+ *
  * Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -22,7 +22,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
@@ -39,7 +39,7 @@ typedef struct {
 	uint64_t lz4_wk_compression_delta;
 	uint64_t lz4_wk_compression_negative_delta;
 	uint64_t lz4_post_wk_compressions;
-	
+
 	uint64_t wk_compressions;
 	uint64_t wk_cabstime;
 	uint64_t wk_sv_compressions;
@@ -90,8 +90,10 @@ typedef struct {
 
 extern compressor_tuneables_t vmctune;
 
-int metacompressor(const uint8_t *in, uint8_t *cdst, int32_t outbufsz, uint16_t *codec, void *cscratch, boolean_t *);
-void metadecompressor(const uint8_t *source, uint8_t *dest, uint32_t csize, uint16_t ccodec, void *compressor_dscratch);
+int metacompressor(const uint8_t *in, uint8_t *cdst, int32_t outbufsz,
+    uint16_t *codec, void *cscratch, boolean_t *, uint32_t *pop_count_p);
+bool metadecompressor(const uint8_t *source, uint8_t *dest, uint32_t csize,
+    uint16_t ccodec, void *compressor_dscratch, uint32_t *pop_count_p);
 
 typedef enum {
 	CCWK = 0, // must be 0 or 1

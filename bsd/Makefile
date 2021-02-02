@@ -6,6 +6,8 @@ export MakeInc_dir=${SRCROOT}/makedefs/MakeInc.dir
 include $(MakeInc_cmd)
 include $(MakeInc_def)
 
+SETUP_SUBDIRS = sys
+
 INSTINC_SUBDIRS = \
 	bsm \
 	crypto \
@@ -21,6 +23,7 @@ INSTINC_SUBDIRS = \
 	security \
 	pthread \
 	sys \
+	sys_private \
 	uuid \
 	vfs
 
@@ -41,6 +44,7 @@ INSTINC_SUBDIRS_ARM64 = \
 
 EXPINC_SUBDIRS = \
 	bsm \
+	crypto/entropy \
 	dev \
 	libkern \
 	machine \
@@ -52,6 +56,7 @@ EXPINC_SUBDIRS = \
 	security \
 	pthread \
 	sys \
+	sys_private \
 	uuid \
 	vfs \
 	vm
@@ -76,6 +81,18 @@ INSTTEXTFILES_SUBDIRS =	\
 	dev \
 	man \
 	sys
+
+INSTTEXTFILES_SUBDIRS_X86_64 = \
+	dev
+
+INSTTEXTFILES_SUBDIRS_X86_64H = \
+	dev
+
+INSTTEXTFILES_SUBDIRS_ARM = \
+	dev
+
+INSTTEXTFILES_SUBDIRS_ARM64 = \
+	dev
 
 include $(MakeInc_rule)
 include $(MakeInc_dir)

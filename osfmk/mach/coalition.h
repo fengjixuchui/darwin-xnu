@@ -31,6 +31,8 @@
 
 /* code shared by userspace and xnu */
 
+#define COALITION_SPAWN_ENTITLEMENT "com.apple.private.coalition-spawn"
+
 #define COALITION_CREATE_FLAGS_MASK       ((uint32_t)0xFF1)
 #define COALITION_CREATE_FLAGS_PRIVILEGED ((uint32_t)0x01)
 
@@ -42,9 +44,9 @@
 
 #define COALITION_CREATE_FLAGS_SET_TYPE(flags, type) \
 	do { \
-		flags &= ~COALITION_CREATE_FLAGS_TYPE_MASK; \
-		flags |= (((type) << COALITION_CREATE_FLAGS_TYPE_SHIFT) \
-			   & COALITION_CREATE_FLAGS_TYPE_MASK); \
+	        flags &= ~COALITION_CREATE_FLAGS_TYPE_MASK; \
+	        flags |= (((type) << COALITION_CREATE_FLAGS_TYPE_SHIFT) \
+	                   & COALITION_CREATE_FLAGS_TYPE_MASK); \
 	} while (0)
 
 #define COALITION_CREATE_FLAGS_ROLE_MASK  ((uint32_t)0xF00)
@@ -55,9 +57,9 @@
 
 #define COALITION_CREATE_FLAGS_SET_ROLE(flags, role) \
     do { \
-        flags &= ~COALITION_CREATE_FLAGS_ROLE_MASK; \
-        flags |= (((role) << COALITION_CREATE_FLAGS_ROLE_SHIFT) \
-               & COALITION_CREATE_FLAGS_ROLE_MASK); \
+	flags &= ~COALITION_CREATE_FLAGS_ROLE_MASK; \
+	flags |= (((role) << COALITION_CREATE_FLAGS_ROLE_SHIFT) \
+	       & COALITION_CREATE_FLAGS_ROLE_MASK); \
     } while (0)
 
 /*
@@ -115,10 +117,10 @@
  * { "Efficient" : COALITION_FLAGS_EFFICIENT, }
  */
 static const char *coalition_efficiency_names[] = {
-    "Efficient",
+	"Efficient",
 };
 static const uint64_t coalition_efficiency_flags[] = {
-    COALITION_FLAGS_EFFICIENT,
+	COALITION_FLAGS_EFFICIENT,
 };
 
 struct coalition_resource_usage {
@@ -138,15 +140,26 @@ struct coalition_resource_usage {
 	uint64_t logical_deferred_writes;
 	uint64_t logical_invalidated_writes;
 	uint64_t logical_metadata_writes;
+	uint64_t logical_immediate_writes_to_external;
+	uint64_t logical_deferred_writes_to_external;
+	uint64_t logical_invalidated_writes_to_external;
+	uint64_t logical_metadata_writes_to_external;
 	uint64_t energy_billed_to_me;
 	uint64_t energy_billed_to_others;
 	uint64_t cpu_ptime;
-	uint64_t cpu_time_eqos_len;	/* Stores the number of thread QoS types */
+	uint64_t cpu_time_eqos_len;     /* Stores the number of thread QoS types */
 	uint64_t cpu_time_eqos[COALITION_NUM_THREAD_QOS_TYPES];
+	uint64_t cpu_instructions;
+	uint64_t cpu_cycles;
+	uint64_t fs_metadata_writes;
+	uint64_t pm_writes;
 };
 
 #ifdef PRIVATE
 /* definitions shared by only xnu + Libsyscall */
+
+/* coalition id for kernel task */
+#define COALITION_ID_KERNEL 1
 
 /* Syscall flavors */
 #define COALITION_OP_CREATE 1
@@ -157,6 +170,9 @@ struct coalition_resource_usage {
 #define COALITION_INFO_RESOURCE_USAGE 1
 #define COALITION_INFO_SET_NAME 2
 #define COALITION_INFO_SET_EFFICIENCY 3
+
+/* coalition_ledger_set operations */
+#define COALITION_LEDGER_SET_LOGICAL_WRITES_LIMIT 1
 
 #define COALITION_EFFICIENCY_VALID_FLAGS    (COALITION_FLAGS_EFFICIENT)
 

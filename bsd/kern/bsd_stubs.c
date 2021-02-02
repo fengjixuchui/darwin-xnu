@@ -63,15 +63,18 @@ kmem_mb_alloc(vm_map_t mbmap, int size, int physContig, kern_return_t *err)
 	vm_offset_t addr = 0;
 	kern_return_t kr = KERN_SUCCESS;
 
-	if (!physContig)
+	if (!physContig) {
 		kr = kernel_memory_allocate(mbmap, &addr, size, 0, KMA_KOBJECT | KMA_LOMEM, VM_KERN_MEMORY_MBUF);
-	else
+	} else {
 		kr = kmem_alloc_contig(mbmap, &addr, size, PAGE_MASK, 0xfffff, 0, KMA_KOBJECT | KMA_LOMEM, VM_KERN_MEMORY_MBUF);
+	}
 
-	if (kr != KERN_SUCCESS)
+	if (kr != KERN_SUCCESS) {
 		addr = 0;
-	if (err)
+	}
+	if (err) {
 		*err = kr;
+	}
 
 	return addr;
 }
@@ -95,25 +98,28 @@ current_proc(void)
 	ut = (struct uthread *)get_bsdthread_info(thread);
 	if (ut && (ut->uu_flag & UT_VFORK) && ut->uu_proc) {
 		p = ut->uu_proc;
-		if ((p->p_lflag & P_LINVFORK) == 0)
+		if ((p->p_lflag & P_LINVFORK) == 0) {
 			panic("returning child proc not under vfork");
-		if (p->p_vforkact != (void *)thread)
+		}
+		if (p->p_vforkact != (void *)thread) {
 			panic("returning child proc which is not cur_act");
-		return (p);
+		}
+		return p;
 	}
 
 	p = (struct proc *)get_bsdtask_info(current_task());
 
-	if (p == NULL)
-		return (kernproc);
+	if (p == NULL) {
+		return kernproc;
+	}
 
-	return (p);
+	return p;
 }
 
 /* Device switch add delete routines */
 
-struct bdevsw nobdev = NO_BDEVICE;
-struct cdevsw nocdev = NO_CDEVICE;
+const struct bdevsw nobdev = NO_BDEVICE;
+const struct cdevsw nocdev = NO_CDEVICE;
 /*
  *	if index is -1, return a free slot if avaliable
  *	  else see whether the index is free
@@ -129,25 +135,28 @@ bdevsw_isfree(int index)
 	struct bdevsw * devsw;
 
 	if (index < 0) {
-		if (index == -1)
+		if (index == -1) {
 			index = 1; /* start at 1 to avoid collision with volfs (Radar 2842228) */
-		else
+		} else {
 			index = -index; /* start at least this far up in the table */
+		}
 		devsw = &bdevsw[index];
 		for (; index < nblkdev; index++, devsw++) {
-			if (memcmp((char *)devsw, (char *)&nobdev, sizeof(struct bdevsw)) == 0)
+			if (memcmp((const char *)devsw, (const char *)&nobdev, sizeof(struct bdevsw)) == 0) {
 				break;
+			}
 		}
 	}
 
-	if (index < 0 || index >= nblkdev)
-		return (-1);
+	if (index < 0 || index >= nblkdev) {
+		return -1;
+	}
 
 	devsw = &bdevsw[index];
-	if ((memcmp((char *)devsw, (char *)&nobdev, sizeof(struct bdevsw)) != 0)) {
-		return (-1);
+	if ((memcmp((const char *)devsw, (const char *)&nobdev, sizeof(struct bdevsw)) != 0)) {
+		return -1;
 	}
-	return (index);
+	return index;
 }
 
 /*
@@ -160,7 +169,7 @@ bdevsw_isfree(int index)
  *	instead of starting at 0
  */
 int
-bdevsw_add(int index, struct bdevsw * bsw)
+bdevsw_add(int index, const struct bdevsw * bsw)
 {
 	lck_mtx_lock_spin(&devsw_lock_list_mtx);
 	index = bdevsw_isfree(index);
@@ -170,29 +179,30 @@ bdevsw_add(int index, struct bdevsw * bsw)
 		bdevsw[index] = *bsw;
 	}
 	lck_mtx_unlock(&devsw_lock_list_mtx);
-	return (index);
+	return index;
 }
 /*
  *	if the slot has the same bsw, then remove
  *	else -1
  */
 int
-bdevsw_remove(int index, struct bdevsw * bsw)
+bdevsw_remove(int index, const struct bdevsw * bsw)
 {
 	struct bdevsw * devsw;
 
-	if (index < 0 || index >= nblkdev)
-		return (-1);
+	if (index < 0 || index >= nblkdev) {
+		return -1;
+	}
 
 	devsw = &bdevsw[index];
 	lck_mtx_lock_spin(&devsw_lock_list_mtx);
-	if ((memcmp((char *)devsw, (char *)bsw, sizeof(struct bdevsw)) != 0)) {
+	if ((memcmp((const char *)devsw, (const char *)bsw, sizeof(struct bdevsw)) != 0)) {
 		index = -1;
 	} else {
 		bdevsw[index] = nobdev;
 	}
 	lck_mtx_unlock(&devsw_lock_list_mtx);
-	return (index);
+	return index;
 }
 
 /*
@@ -210,25 +220,28 @@ cdevsw_isfree(int index)
 	struct cdevsw * devsw;
 
 	if (index < 0) {
-		if (index == -1)
+		if (index == -1) {
 			index = 0;
-		else
+		} else {
 			index = -index; /* start at least this far up in the table */
+		}
 		devsw = &cdevsw[index];
 		for (; index < nchrdev; index++, devsw++) {
-			if (memcmp((char *)devsw, (char *)&nocdev, sizeof(struct cdevsw)) == 0)
+			if (memcmp((const char *)devsw, (const char *)&nocdev, sizeof(struct cdevsw)) == 0) {
 				break;
+			}
 		}
 	}
 
-	if (index < 0 || index >= nchrdev)
-		return (-1);
+	if (index < 0 || index >= nchrdev) {
+		return -1;
+	}
 
 	devsw = &cdevsw[index];
-	if ((memcmp((char *)devsw, (char *)&nocdev, sizeof(struct cdevsw)) != 0)) {
-		return (-1);
+	if ((memcmp((const char *)devsw, (const char *)&nocdev, sizeof(struct cdevsw)) != 0)) {
+		return -1;
 	}
-	return (index);
+	return index;
 }
 
 /*
@@ -246,7 +259,7 @@ cdevsw_isfree(int index)
  *		before them.  -24 is currently a safe starting point.
  */
 int
-cdevsw_add(int index, struct cdevsw * csw)
+cdevsw_add(int index, const struct cdevsw * csw)
 {
 	lck_mtx_lock_spin(&devsw_lock_list_mtx);
 	index = cdevsw_isfree(index);
@@ -256,54 +269,55 @@ cdevsw_add(int index, struct cdevsw * csw)
 		cdevsw[index] = *csw;
 	}
 	lck_mtx_unlock(&devsw_lock_list_mtx);
-	return (index);
+	return index;
 }
 /*
  *	if the slot has the same csw, then remove
  *	else -1
  */
 int
-cdevsw_remove(int index, struct cdevsw * csw)
+cdevsw_remove(int index, const struct cdevsw * csw)
 {
 	struct cdevsw * devsw;
 
-	if (index < 0 || index >= nchrdev)
-		return (-1);
+	if (index < 0 || index >= nchrdev) {
+		return -1;
+	}
 
 	devsw = &cdevsw[index];
 	lck_mtx_lock_spin(&devsw_lock_list_mtx);
-	if ((memcmp((char *)devsw, (char *)csw, sizeof(struct cdevsw)) != 0)) {
+	if ((memcmp((const char *)devsw, (const char *)csw, sizeof(struct cdevsw)) != 0)) {
 		index = -1;
 	} else {
 		cdevsw[index] = nocdev;
 		cdevsw_flags[index] = 0;
 	}
 	lck_mtx_unlock(&devsw_lock_list_mtx);
-	return (index);
+	return index;
 }
 
 static int
 cdev_set_bdev(int cdev, int bdev)
 {
-	return (chrtoblk_set(cdev, bdev));
+	return chrtoblk_set(cdev, bdev);
 }
 
 int
-cdevsw_add_with_bdev(int index, struct cdevsw * csw, int bdev)
+cdevsw_add_with_bdev(int index, const struct cdevsw * csw, int bdev)
 {
 	index = cdevsw_add(index, csw);
 	if (index < 0) {
-		return (index);
+		return index;
 	}
 	if (cdev_set_bdev(index, bdev) < 0) {
 		cdevsw_remove(index, csw);
-		return (-1);
+		return -1;
 	}
-	return (index);
+	return index;
 }
 
 int
-cdevsw_setkqueueok(int maj, struct cdevsw * csw, int extra_flags)
+cdevsw_setkqueueok(int maj, const struct cdevsw * csw, int extra_flags)
 {
 	struct cdevsw * devsw;
 	uint64_t flags = CDEVSW_SELECT_KQUEUE;
@@ -313,7 +327,7 @@ cdevsw_setkqueueok(int maj, struct cdevsw * csw, int extra_flags)
 	}
 
 	devsw = &cdevsw[maj];
-	if ((memcmp((char *)devsw, (char *)csw, sizeof(struct cdevsw)) != 0)) {
+	if ((memcmp((const char *)devsw, (const char *)csw, sizeof(struct cdevsw)) != 0)) {
 		return -1;
 	}
 
@@ -332,18 +346,24 @@ cdevsw_setkqueueok(int maj, struct cdevsw * csw, int extra_flags)
  * the NULL character in the hostname.
  */
 int
-bsd_hostname(char * buf, int bufsize, int * len)
+bsd_hostname(char *buf, size_t bufsize, size_t *len)
 {
+	int ret;
+	size_t hnlen;
 	/*
-	 * "hostname" is null-terminated, and "hostnamelen" is equivalent to strlen(hostname).
+	 * "hostname" is null-terminated
 	 */
-	if (hostnamelen < bufsize) {
+	lck_mtx_lock(&hostname_lock);
+	hnlen = strlen(hostname);
+	if (hnlen < bufsize) {
 		strlcpy(buf, hostname, bufsize);
-		*len = hostnamelen;
-		return 0;
+		*len = hnlen;
+		ret = 0;
 	} else {
-		return ENAMETOOLONG;
+		ret = ENAMETOOLONG;
 	}
+	lck_mtx_unlock(&hostname_lock);
+	return ret;
 }
 
 void

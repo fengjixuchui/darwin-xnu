@@ -2,7 +2,7 @@
  * Copyright (c) 1998-2000 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
@@ -11,10 +11,10 @@
  * unlawful or unlicensed copies of an Apple operating system, or to
  * circumvent, violate, or enable the circumvention or violation of, any
  * terms of an Apple operating system software license agreement.
- * 
+ *
  * Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -22,7 +22,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 
@@ -60,6 +60,14 @@ typedef uint8_t OSKextExcludeLevel;
 #define kOSKextExcludeKext  (1)
 #define kOSKextExcludeAll   (2)
 
+#define kIOCatalogManagementEntitlement "com.apple.private.security.iocatalog-management"
+#define kOSKextCollectionManagementEntitlement "com.apple.private.security.kext-collection-management"
+#define kOSKextOnlyBootKCManagementEntitlement "com.apple.private.security.only-bootkc-management"
+
+#define kOSKextCodelessKextLoadAddr (0x7FFFFFFFFFFFFFFFULL)
+
+#define kIOKitDaemonName "kernelmanagerd"
+
 #if PRAGMA_MARK
 #pragma mark -
 /********************************************************************/
@@ -78,14 +86,14 @@ typedef uint8_t OSKextExcludeLevel;
  * @abstract A boolean value indicating whether the kext should only load on
  *           Developer devices.
  */
-#define kOSBundleDeveloperOnlyKey		"OSBundleDeveloperOnly"
+#define kOSBundleDeveloperOnlyKey               "OSBundleDeveloperOnly"
 
 /*!
  * @define   kOSBundleRamDiskOnlyKey
  * @abstract A boolean value indicating whether the kext should only load when
  *           booted from a ram disk.
  */
-#define kOSBundleRamDiskOnlyKey		"OSBundleRamDiskOnly"
+#define kOSBundleRamDiskOnlyKey         "OSBundleRamDiskOnly"
 
 
 /*!
@@ -93,14 +101,36 @@ typedef uint8_t OSKextExcludeLevel;
  * @abstract A boolean value indicating whether the kext registers
  *           MACF hooks.
  */
-#define kAppleSecurityExtensionKey	"AppleSecurityExtension"
+#define kAppleSecurityExtensionKey      "AppleSecurityExtension"
 
 /*!
  * @define   kAppleKernelExternalComponentKey
  * @abstract A boolean value indicating whether the kext is vending kernel
  *           KPI, and needs special loading behavior.
  */
-#define kAppleKernelExternalComponentKey	"AppleKernelExternalComponent"
+#define kAppleKernelExternalComponentKey        "AppleKernelExternalComponent"
+
+/*!
+ * @define kOSKextInfoPlistDigestKey
+ * @abstract SHA-256 data of the kext's Info.plist
+ */
+#define kOSKextInfoPlistDigestKey       "_InfoPlistDigest"
+
+/*!
+ * @define kOSKextBundleCollectionTypeKey
+ * @abstract The type of collection in which a kext is linked. Possible
+ *           values: kKCTypePrimary, kKCTypeSystem, kKCTypeAuxiliary,
+ *                   kKCTypeCodeless
+ */
+#define kOSKextBundleCollectionTypeKey  "_BundleCollectionType"
+
+/*!
+ * @define kOSKextAuxKCAvailabilityKey
+ * @abstract boolean value: false if the kext is in the AuxKC and
+ *           is not loadable; true otherwise.
+ */
+#define kOSKextAuxKCAvailabilityKey     "_AuxKCAvailability"
+
 
 // properties found in the registry root
 #define kOSKernelCPUTypeKey             "OSKernelCPUType"
@@ -161,6 +191,18 @@ typedef uint8_t OSKextExcludeLevel;
 #if PRAGMA_MARK
 #pragma mark -
 /********************************************************************/
+#pragma mark Kext Collection Type Keys
+/********************************************************************/
+#endif
+#define kKCTypePrimary   "Primary"
+#define kKCTypeSystem    "System"
+#define kKCTypeAuxiliary "Auxiliary"
+#define kKCTypeCodeless  "Codeless"
+#define kKCTypeAny       "Any"
+
+#if PRAGMA_MARK
+#pragma mark -
+/********************************************************************/
 #pragma mark Kext Log Specification
 /********************************************************************/
 #endif
@@ -185,7 +227,7 @@ typedef uint8_t OSKextExcludeLevel;
  *   <li>A <b>level</b> from 0-7 in the lowest-order nibble (0x7).</li>
  *   <li>A flag bit in the lowest-order nibble (0x8) indicating whether
  *       log messages tied to individual kexts are always printed (1)
- *       or printed only if the kext has an 
+ *       or printed only if the kext has an
  *       @link //apple_ref/c/macro/kOSBundleEnableKextLoggingKey
  *       OSBundleEnableKextLogging@/link set to <code>true</code>.
  *   <li>A set of <b>activity flags</b> in the remaining nibbles (0xFFFFFFF0),
@@ -576,8 +618,8 @@ typedef uint32_t OSKextLogSpec;
  *           set to <code>true</code>.
  */
 #define kOSKextLogShowAllKextsFilter     ((OSKextLogSpec) \
-                                           (kOSKextLogShowAllFilter | \
-                                            kOSKextLogKextOrGlobalMask))
+	                                   (kOSKextLogShowAllFilter | \
+	                                    kOSKextLogKextOrGlobalMask))
 
 #if PRAGMA_MARK
 #pragma mark -
@@ -589,7 +631,7 @@ typedef uint32_t OSKextLogSpec;
  * @group Kext Version String Processing
  * Functions for working with kext versions and compatible versions.
  */
- 
+
 /*!
  * @typedef   OSKextVersion
  * @abstract  An encoded kext version that can be compared arithmetically.
@@ -683,9 +725,9 @@ OSKextVersion OSKextParseVersionString(const char * versionString);
  * the resulting string is "(invalid)".
  */
 Boolean OSKextVersionGetString(
-    OSKextVersion   aVersion,
-    char          * buffer,
-    uint32_t        bufferSize);
+	OSKextVersion   aVersion,
+	char          * buffer,
+	uint32_t        bufferSize);
 
 
 #ifdef KERNEL
@@ -698,7 +740,7 @@ Boolean OSKextVersionGetString(
 /********************************************************************/
 #endif
 #ifdef XNU_KERNEL_PRIVATE
-void kext_weak_symbol_referenced(void);
+void kext_weak_symbol_referenced(void) __abortlike;
 #endif /* XNU_KERNEL_PRIVATE */
 
 #if PRAGMA_MARK
@@ -792,7 +834,7 @@ void kext_dump_panic_lists(int (*printf_func)(const char *fmt, ...));
  * when there are no C++ objects and the kext reference count is zero.
  */
 uint32_t OSKextGetLoadTagForBundleIdentifier(
-    const char * kextIdentifier);
+	const char * kextIdentifier);
 
 
 /*!
@@ -820,7 +862,7 @@ uint32_t OSKextGetLoadTagForBundleIdentifier(
  * OSKextRetainKextWithLoadTag@/link</code>
  * with its own load tag
  * (the <code>id</code> field of its <code>kmod_info_t</code> struct),
- * followed by 
+ * followed by
  * <code>@link //apple_ref/c/func/OSKextReleaseKextWithLoadTag
  * OSKextReleaseKextWithLoadTag@/link</code>;
  * this will schedule the kext for unload on a separate thread.
@@ -862,20 +904,24 @@ OSReturn OSKextUnloadKextWithLoadTag(uint32_t loadTag);
  * @field loadTag The kext's load tag.
  * @field flags Internal tracking flags.
  * @field reference_list who this refs (links on).
- * 
+ * @field text_exec_address The address of the __TEXT_EXEC segment (if it exists), otherwise __TEXT
+ * @field text_exec_size The size of the segment pointed to by text_address
+ *
  * @discussion
  * The OSKextLoadedKextSummary structure contains a basic set of information
  * about the kext to facilitate kext debugging and panic debug log output.
  */
 typedef struct _loaded_kext_summary {
-    char        name[KMOD_MAX_NAME];
-    uuid_t      uuid;
-    uint64_t    address;
-    uint64_t    size;
-    uint64_t    version;
-    uint32_t    loadTag;
-    uint32_t    flags;
-    uint64_t    reference_list;
+	char        name[KMOD_MAX_NAME];
+	uuid_t      uuid;
+	uint64_t    address;
+	uint64_t    size;
+	uint64_t    version;
+	uint32_t    loadTag;
+	uint32_t    flags;
+	uint64_t    reference_list;
+	uint64_t    text_exec_address;
+	size_t      text_exec_size;
 } OSKextLoadedKextSummary;
 
 /*!
@@ -896,11 +942,11 @@ typedef struct _loaded_kext_summary {
  * that declares an executable and is not an interface to the kernel.
  */
 typedef struct _loaded_kext_summary_header {
-    uint32_t version;
-    uint32_t entry_size;
-    uint32_t numSummaries;
-    uint32_t reserved; /* explicit alignment for gdb  */
-    OSKextLoadedKextSummary summaries[0];
+	uint32_t version;
+	uint32_t entry_size;
+	uint32_t numSummaries;
+	uint32_t reserved; /* explicit alignment for gdb  */
+	OSKextLoadedKextSummary summaries[0];
 } OSKextLoadedKextSummaryHeader;
 
 /*!
@@ -933,7 +979,7 @@ void OSKextLoadedKextSummariesUpdated(void);
 
 extern const vm_allocation_site_t * OSKextGetAllocationSiteForCaller(uintptr_t address);
 extern uint32_t                     OSKextGetKmodIDForSite(const vm_allocation_site_t * site,
-                                                           char * name, vm_size_t namelen);
+    char * name, vm_size_t namelen);
 extern void                         OSKextFreeSite(vm_allocation_site_t * site);
 
 #if CONFIG_IMAGEBOOT

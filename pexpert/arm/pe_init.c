@@ -28,7 +28,7 @@
 extern void     pe_identify_machine(boot_args *bootArgs);
 
 /* static references */
-static void	pe_prepare_images(void);
+static void     pe_prepare_images(void);
 
 /* private globals */
 SECURITY_READ_ONLY_LATE(PE_state_t) PE_state;
@@ -37,27 +37,38 @@ char            firmware_version[FW_VERS_LEN];
 
 /*
  * This variable is only modified once, when the BSP starts executing. We put it in __TEXT
- * as page protections on kernel text early in startup are read-write. The kernel is 
- * locked down later in start-up, said mappings become RO and thus this 
+ * as page protections on kernel text early in startup are read-write. The kernel is
+ * locked down later in start-up, said mappings become RO and thus this
  * variable becomes immutable.
  *
  * See osfmk/arm/arm_vm_init.c for more information.
  */
-SECURITY_READ_ONLY_SPECIAL_SECTION(volatile uint32_t, "__TEXT,__const")	debug_enabled = FALSE;
+SECURITY_READ_ONLY_SPECIAL_SECTION(volatile uint32_t, "__TEXT,__const") debug_enabled = FALSE;
 
 uint8_t         gPlatformECID[8];
 uint32_t        gPlatformMemoryID;
 static boolean_t vc_progress_initialized = FALSE;
 uint64_t    last_hwaccess_thread = 0;
-char     gTargetTypeBuffer[8];
+char     gTargetTypeBuffer[16];
 char     gModelTypeBuffer[32];
 
 /* Clock Frequency Info */
 clock_frequency_info_t gPEClockFrequencyInfo;
 
-vm_offset_t gPanicBase;
+vm_offset_t gPanicBase = 0;
 unsigned int gPanicSize;
 struct embedded_panic_header *panic_info = NULL;
+
+#if (DEVELOPMENT || DEBUG) && defined(XNU_TARGET_OS_BRIDGE)
+/*
+ * On DEVELOPMENT bridgeOS, we map the x86 panic region
+ * so we can include this data in bridgeOS corefiles
+ */
+uint64_t macos_panic_base = 0;
+unsigned int macos_panic_size = 0;
+
+struct macos_panic_header *mac_panic_header = NULL;
+#endif
 
 /* Maximum size of panic log excluding headers, in bytes */
 static unsigned int panic_text_len;
@@ -79,34 +90,60 @@ check_for_panic_log(void)
 #else
 	DTEntry entry, chosen;
 	unsigned int size;
-	uintptr_t *reg_prop;
-	uint32_t *panic_region_length;
+	uintptr_t const *reg_prop;
+	uint32_t const *panic_region_length;
 
 	/*
-	 * Find the vram node in the device tree
+	 * DT properties for the panic region are populated by UpdateDeviceTree() in iBoot:
+	 *
+	 * chosen {
+	 *   embedded-panic-log-size = <0x00080000>;
+	 *   [a bunch of other stuff]
+	 * };
+	 *
+	 * pram {
+	 *   reg = <0x00000008_fbc48000 0x00000000_000b4000>;
+	 * };
+	 *
+	 * reg[0] is the physical address
+	 * reg[1] is the size of iBoot's kMemoryRegion_Panic (not used)
+	 * embedded-panic-log-size is the maximum amount of data to store in the buffer
 	 */
-	if (kSuccess != DTLookupEntry(0, "pram", &entry))
+	if (kSuccess != SecureDTLookupEntry(0, "pram", &entry)) {
 		return;
+	}
 
-	if (kSuccess != DTGetProperty(entry, "reg", (void **)&reg_prop, &size))
+	if (kSuccess != SecureDTGetProperty(entry, "reg", (void const **)&reg_prop, &size)) {
 		return;
+	}
 
-	if (kSuccess != DTLookupEntry(0, "/chosen", &chosen))
+	if (kSuccess != SecureDTLookupEntry(0, "/chosen", &chosen)) {
 		return;
+	}
 
-	if (kSuccess != DTGetProperty(chosen, "embedded-panic-log-size", (void **) &panic_region_length, &size))
+	if (kSuccess != SecureDTGetProperty(chosen, "embedded-panic-log-size", (void const **) &panic_region_length, &size)) {
 		return;
+	}
 
-	/*
-	 * Map the first page of VRAM into the kernel for use in case of
-	 * panic
-	 */
-	/* Note: map as normal memory. */
 	gPanicBase = ml_io_map_wcomb(reg_prop[0], panic_region_length[0]);
 
 	/* Deduct the size of the panic header from the panic region size */
 	panic_text_len = panic_region_length[0] - sizeof(struct embedded_panic_header);
 	gPanicSize = panic_region_length[0];
+
+#if DEVELOPMENT && defined(XNU_TARGET_OS_BRIDGE)
+	if (PE_consistent_debug_enabled()) {
+		uint64_t macos_panic_physbase = 0;
+		uint64_t macos_panic_physlen = 0;
+		/* Populate the macOS panic region data if it's present in consistent debug */
+		if (PE_consistent_debug_lookup_entry(kDbgIdMacOSPanicRegion, &macos_panic_physbase, &macos_panic_physlen)) {
+			macos_panic_base = ml_io_map_with_prot(macos_panic_physbase, macos_panic_physlen, VM_PROT_READ);
+			mac_panic_header = (struct macos_panic_header *) ((void *) macos_panic_base);
+			macos_panic_size = macos_panic_physlen;
+		}
+	}
+#endif /* DEVELOPMENT && defined(XNU_TARGET_OS_BRIDGE) */
+
 #endif
 	panic_info = (struct embedded_panic_header *)gPanicBase;
 
@@ -137,10 +174,11 @@ PE_initialize_console(PE_Video * info, int op)
 {
 	static int last_console = -1;
 
-	if (info && (info != &PE_state.video)) info->v_scale = PE_state.video.v_scale;
+	if (info && (info != &PE_state.video)) {
+		info->v_scale = PE_state.video.v_scale;
+	}
 
 	switch (op) {
-
 	case kPEDisableScreen:
 		initialize_screen(info, op);
 		last_console = switch_to_serial_console();
@@ -149,11 +187,13 @@ PE_initialize_console(PE_Video * info, int op)
 
 	case kPEEnableScreen:
 		initialize_screen(info, op);
-		if (info)
+		if (info) {
 			PE_state.video = *info;
+		}
 		kprintf("kPEEnableScreen %d\n", last_console);
-		if (last_console != -1)
+		if (last_console != -1) {
 			switch_to_old_console(last_console);
+		}
 		break;
 
 	case kPEReleaseScreen:
@@ -165,10 +205,10 @@ PE_initialize_console(PE_Video * info, int op)
 			default_progress.dx = 0;
 			default_progress.dy = 0;
 			vc_progress_initialize(&default_progress,
-					       default_progress_data1x, 
-					       default_progress_data2x,
-					       default_progress_data3x,
-					       (unsigned char *) appleClut8);
+			    default_progress_data1x,
+			    default_progress_data2x,
+			    default_progress_data3x,
+			    (unsigned char *) appleClut8);
 			vc_progress_initialized = TRUE;
 		}
 		initialize_screen(info, op);
@@ -185,32 +225,30 @@ PE_initialize_console(PE_Video * info, int op)
 void
 PE_init_iokit(void)
 {
-	DTEntry		entry;
-	unsigned int	size, scale;
-	unsigned long	display_size;
-	void		**map;
-	unsigned int	show_progress;
-	int		*delta, image_size, flip;
-	uint32_t	start_time_value = 0;
-	uint32_t	debug_wait_start_value = 0;
-	uint32_t	load_kernel_start_value = 0;
-	uint32_t	populate_registry_time_value = 0;
+	DTEntry         entry;
+	unsigned int    size, scale;
+	unsigned long   display_size;
+	void const * const *map;
+	unsigned int    show_progress;
+	int             *delta, image_size, flip;
+	uint32_t        start_time_value = 0;
+	uint32_t        debug_wait_start_value = 0;
+	uint32_t        load_kernel_start_value = 0;
+	uint32_t        populate_registry_time_value = 0;
 
-	PE_init_kprintf(TRUE);
 	PE_init_printf(TRUE);
 
 	printf("iBoot version: %s\n", firmware_version);
 
-	if (kSuccess == DTLookupEntry(0, "/chosen/memory-map", &entry)) {
+	if (kSuccess == SecureDTLookupEntry(0, "/chosen/memory-map", &entry)) {
+		boot_progress_element const *bootPict;
 
-		boot_progress_element *bootPict;
-
-		if (kSuccess == DTGetProperty(entry, "BootCLUT", (void **) &map, &size))
+		if (kSuccess == SecureDTGetProperty(entry, "BootCLUT", (void const **) &map, &size)) {
 			bcopy(map[0], appleClut8, sizeof(appleClut8));
+		}
 
-		if (kSuccess == DTGetProperty(entry, "Pict-FailedBoot", (void **) &map, &size)) {
-
-			bootPict = (boot_progress_element *) map[0];
+		if (kSuccess == SecureDTGetProperty(entry, "Pict-FailedBoot", (void const **) &map, &size)) {
+			bootPict = (boot_progress_element const *) map[0];
 			default_noroot.width = bootPict->width;
 			default_noroot.height = bootPict->height;
 			default_noroot.dx = 0;
@@ -224,12 +262,25 @@ PE_init_iokit(void)
 	scale = PE_state.video.v_scale;
 	flip = 1;
 
-	if (PE_parse_boot_argn("-progress", &show_progress, sizeof (show_progress)) && show_progress) {
+#if defined(XNU_TARGET_OS_OSX)
+	int notused;
+	show_progress = TRUE;
+	if (PE_parse_boot_argn("-restore", &notused, sizeof(notused))) {
+		show_progress = FALSE;
+	}
+	if (PE_parse_boot_argn("-noprogress", &notused, sizeof(notused))) {
+		show_progress = FALSE;
+	}
+#else
+	show_progress = FALSE;
+	PE_parse_boot_argn("-progress", &show_progress, sizeof(show_progress));
+#endif /* XNU_TARGET_OS_OSX */
+	if (show_progress) {
 		/* Rotation: 0:normal, 1:right 90, 2:left 180, 3:left 90 */
 		switch (PE_state.video.v_rotate) {
-		case 2: 
+		case 2:
 			flip = -1;
-			/* fall through */
+			OS_FALLTHROUGH;
 		case 0:
 			display_size = PE_state.video.v_height;
 			image_size = default_progress.height;
@@ -237,7 +288,7 @@ PE_init_iokit(void)
 			break;
 		case 1:
 			flip = -1;
-			/* fall through */
+			OS_FALLTHROUGH;
 		case 3:
 		default:
 			display_size = PE_state.video.v_width;
@@ -255,43 +306,66 @@ PE_init_iokit(void)
 		PE_get_default("progress-dy", &default_progress.dy, sizeof(default_progress.dy));
 
 		vc_progress_initialize(&default_progress,
-				       default_progress_data1x, 
-				       default_progress_data2x,
-				       default_progress_data3x,
-				       (unsigned char *) appleClut8);
+		    default_progress_data1x,
+		    default_progress_data2x,
+		    default_progress_data3x,
+		    (unsigned char *) appleClut8);
 		vc_progress_initialized = TRUE;
 	}
 
 	if (kdebug_enable && kdebug_debugid_enabled(IOKDBG_CODE(DBG_BOOTER, 0))) {
 		/* Trace iBoot-provided timing information. */
-		if (kSuccess == DTLookupEntry(0, "/chosen/iBoot", &entry)) {
-			uint32_t * value_ptr;
+		if (kSuccess == SecureDTLookupEntry(0, "/chosen/iBoot", &entry)) {
+			uint32_t const * value_ptr;
 
-			if (kSuccess == DTGetProperty(entry, "start-time", (void **)&value_ptr, &size)) {
-				if (size == sizeof(start_time_value))
+			if (kSuccess == SecureDTGetProperty(entry, "start-time", (void const **)&value_ptr, &size)) {
+				if (size == sizeof(start_time_value)) {
 					start_time_value = *value_ptr;
+				}
 			}
 
-			if (kSuccess == DTGetProperty(entry, "debug-wait-start", (void **)&value_ptr, &size)) {
-				if (size == sizeof(debug_wait_start_value))
+			if (kSuccess == SecureDTGetProperty(entry, "debug-wait-start", (void const **)&value_ptr, &size)) {
+				if (size == sizeof(debug_wait_start_value)) {
 					debug_wait_start_value = *value_ptr;
+				}
 			}
 
-			if (kSuccess == DTGetProperty(entry, "load-kernel-start", (void **)&value_ptr, &size)) {
-				if (size == sizeof(load_kernel_start_value))
+			if (kSuccess == SecureDTGetProperty(entry, "load-kernel-start", (void const **)&value_ptr, &size)) {
+				if (size == sizeof(load_kernel_start_value)) {
 					load_kernel_start_value = *value_ptr;
+				}
 			}
 
-			if (kSuccess == DTGetProperty(entry, "populate-registry-time", (void **)&value_ptr, &size)) {
-				if (size == sizeof(populate_registry_time_value))
+			if (kSuccess == SecureDTGetProperty(entry, "populate-registry-time", (void const **)&value_ptr, &size)) {
+				if (size == sizeof(populate_registry_time_value)) {
 					populate_registry_time_value = *value_ptr;
+				}
 			}
 		}
 
 		KDBG_RELEASE(IOKDBG_CODE(DBG_BOOTER, 0), start_time_value, debug_wait_start_value, load_kernel_start_value, populate_registry_time_value);
 	}
 
-	StartIOKit(PE_state.deviceTreeHead, PE_state.bootArgs, (void *) 0, (void *) 0);
+	InitIOKit(PE_state.deviceTreeHead);
+	ConfigureIOKit();
+}
+
+void
+PE_lockdown_iokit(void)
+{
+	/*
+	 * On arm/arm64 platforms, and especially those that employ KTRR/CTRR,
+	 * machine_lockdown() is treated as a hard security checkpoint, such that
+	 * code which executes prior to lockdown must be minimized and limited only to
+	 * trusted parts of the kernel and specially-entitled kexts.  We therefore
+	 * cannot start the general-purpose IOKit matching process until after lockdown,
+	 * as it may involve execution of untrusted/non-entitled kext code.
+	 * Furthermore, such kext code may process attacker controlled data (e.g.
+	 * network packets), which dramatically increases the potential attack surface
+	 * against a kernel which has not yet enabled the full set of available
+	 * hardware protections.
+	 */
+	StartIOKitMatching();
 }
 
 void
@@ -299,21 +373,22 @@ PE_slide_devicetree(vm_offset_t slide)
 {
 	assert(PE_state.initialized);
 	PE_state.deviceTreeHead += slide;
-	DTInit(PE_state.deviceTreeHead);
+	SecureDTInit(PE_state.deviceTreeHead, PE_state.deviceTreeSize);
 }
 
 void
 PE_init_platform(boolean_t vm_initialized, void *args)
 {
 	DTEntry         entry;
-	unsigned int	size;
-	void          **prop;
+	unsigned int    size;
+	void * const    *prop;
 	boot_args      *boot_args_ptr = (boot_args *) args;
 
 	if (PE_state.initialized == FALSE) {
 		PE_state.initialized = TRUE;
 		PE_state.bootArgs = boot_args_ptr;
 		PE_state.deviceTreeHead = boot_args_ptr->deviceTreeP;
+		PE_state.deviceTreeSize = boot_args_ptr->deviceTreeLength;
 		PE_state.video.v_baseAddr = boot_args_ptr->Video.v_baseAddr;
 		PE_state.video.v_rowBytes = boot_args_ptr->Video.v_rowBytes;
 		PE_state.video.v_width = boot_args_ptr->Video.v_width;
@@ -330,7 +405,7 @@ PE_init_platform(boolean_t vm_initialized, void *args)
 		 * so the console can be found and the right I/O space
 		 * can be used..
 		 */
-		DTInit(PE_state.deviceTreeHead);
+		SecureDTInit(PE_state.deviceTreeHead, PE_state.deviceTreeSize);
 		pe_identify_machine(boot_args_ptr);
 	} else {
 		pe_arm_init_interrupts(args);
@@ -338,28 +413,30 @@ PE_init_platform(boolean_t vm_initialized, void *args)
 	}
 
 	if (!vm_initialized) {
-		if (kSuccess == (DTFindEntry("name", "device-tree", &entry))) {
-			if (kSuccess == DTGetProperty(entry, "target-type",
-				(void **)&prop, &size)) {
-				if (size > sizeof(gTargetTypeBuffer))
+		if (kSuccess == (SecureDTFindEntry("name", "device-tree", &entry))) {
+			if (kSuccess == SecureDTGetProperty(entry, "target-type",
+			    (void const **)&prop, &size)) {
+				if (size > sizeof(gTargetTypeBuffer)) {
 					size = sizeof(gTargetTypeBuffer);
-				bcopy(prop,gTargetTypeBuffer,size);
-				gTargetTypeBuffer[size-1]='\0';
+				}
+				bcopy(prop, gTargetTypeBuffer, size);
+				gTargetTypeBuffer[size - 1] = '\0';
 			}
 		}
-		if (kSuccess == (DTFindEntry("name", "device-tree", &entry))) {
-			if (kSuccess == DTGetProperty(entry, "model",
-				(void **)&prop, &size)) {
-				if (size > sizeof(gModelTypeBuffer))
+		if (kSuccess == (SecureDTFindEntry("name", "device-tree", &entry))) {
+			if (kSuccess == SecureDTGetProperty(entry, "model",
+			    (void const **)&prop, &size)) {
+				if (size > sizeof(gModelTypeBuffer)) {
 					size = sizeof(gModelTypeBuffer);
-				bcopy(prop,gModelTypeBuffer,size);
-				gModelTypeBuffer[size-1]='\0';
+				}
+				bcopy(prop, gModelTypeBuffer, size);
+				gModelTypeBuffer[size - 1] = '\0';
 			}
 		}
-		if (kSuccess == DTLookupEntry(NULL, "/chosen", &entry)) {
-			if (kSuccess == DTGetProperty(entry, "debug-enabled",
-						      (void **) &prop, &size)) {
-				/* 
+		if (kSuccess == SecureDTLookupEntry(NULL, "/chosen", &entry)) {
+			if (kSuccess == SecureDTGetProperty(entry, "debug-enabled",
+			    (void const **) &prop, &size)) {
+				/*
 				 * We purposefully modify a constified variable as
 				 * it will get locked down by a trusted monitor or
 				 * via page table mappings. We don't want people easily
@@ -368,29 +445,33 @@ PE_init_platform(boolean_t vm_initialized, void *args)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-qual"
 				boolean_t *modify_debug_enabled = (boolean_t *) &debug_enabled;
-				if (size > sizeof(uint32_t))
+				if (size > sizeof(uint32_t)) {
 					size = sizeof(uint32_t);
+				}
 				bcopy(prop, modify_debug_enabled, size);
 #pragma clang diagnostic pop
 			}
-			if (kSuccess == DTGetProperty(entry, "firmware-version",
-						      (void **) &prop, &size)) {
-				if (size > sizeof(firmware_version))
+			if (kSuccess == SecureDTGetProperty(entry, "firmware-version",
+			    (void const **) &prop, &size)) {
+				if (size > sizeof(firmware_version)) {
 					size = sizeof(firmware_version);
+				}
 				bcopy(prop, firmware_version, size);
 				firmware_version[size - 1] = '\0';
 			}
-			if (kSuccess == DTGetProperty(entry, "unique-chip-id",
-						      (void **) &prop, &size)) {
-				if (size > sizeof(gPlatformECID))
+			if (kSuccess == SecureDTGetProperty(entry, "unique-chip-id",
+			    (void const **) &prop, &size)) {
+				if (size > sizeof(gPlatformECID)) {
 					size = sizeof(gPlatformECID);
-				bcopy(prop,gPlatformECID,size);
+				}
+				bcopy(prop, gPlatformECID, size);
 			}
-			if (kSuccess == DTGetProperty(entry, "dram-vendor-id",
-						      (void **) &prop, &size)) {
-				if (size > sizeof(gPlatformMemoryID))
+			if (kSuccess == SecureDTGetProperty(entry, "dram-vendor-id",
+			    (void const **) &prop, &size)) {
+				if (size > sizeof(gPlatformMemoryID)) {
 					size = sizeof(gPlatformMemoryID);
-				bcopy(prop,&gPlatformMemoryID,size);
+				}
+				bcopy(prop, &gPlatformMemoryID, size);
 			}
 		}
 		pe_init_debug();
@@ -406,30 +487,32 @@ PE_create_console(void)
 	 */
 	check_for_panic_log();
 
-	if (PE_state.video.v_display)
+	if (PE_state.video.v_display) {
 		PE_initialize_console(&PE_state.video, kPEGraphicsMode);
-	else
+	} else {
 		PE_initialize_console(&PE_state.video, kPETextMode);
+	}
 }
 
 int
 PE_current_console(PE_Video * info)
 {
 	*info = PE_state.video;
-	return (0);
+	return 0;
 }
 
 void
 PE_display_icon(__unused unsigned int flags, __unused const char *name)
 {
-	if (default_noroot_data)
+	if (default_noroot_data) {
 		vc_display_icon(&default_noroot, default_noroot_data);
+	}
 }
 
 extern          boolean_t
 PE_get_hotkey(__unused unsigned char key)
 {
-	return (FALSE);
+	return FALSE;
 }
 
 static timebase_callback_func gTimebaseCallback;
@@ -450,26 +533,20 @@ PE_call_timebase_callback(void)
 	timebase_freq.timebase_num = gPEClockFrequencyInfo.timebase_frequency_hz;
 	timebase_freq.timebase_den = 1;
 
-	if (gTimebaseCallback)
+	if (gTimebaseCallback) {
 		gTimebaseCallback(&timebase_freq);
+	}
 }
 
 /*
  * The default PE_poll_input handler.
  */
-static int
+int
 PE_stub_poll_input(__unused unsigned int options, char *c)
 {
-	*c = uart_getc();
-	return 0;		/* 0 for success, 1 for unsupported */
+	*c = (char)uart_getc();
+	return 0;               /* 0 for success, 1 for unsupported */
 }
-
-/*
- * Called by the kernel debugger to poll for keyboard input.
- * Keyboard drivers may replace the default stub function
- * with their polled-mode input function.
- */
-int             (*PE_poll_input) (unsigned int options, char *c) = PE_stub_poll_input;
 
 /*
  * This routine will return 1 if you are running on a device with a variant
@@ -484,14 +561,15 @@ PE_i_can_has_debugger(uint32_t *debug_flags)
 {
 	if (debug_flags) {
 #if DEVELOPMENT || DEBUG
-		assert(debug_boot_arg_inited);
+		assert(startup_phase >= STARTUP_SUB_TUNABLES);
 #endif
-		if (debug_enabled)
-			*debug_flags = debug_boot_arg;	
-		else
+		if (debug_enabled) {
+			*debug_flags = debug_boot_arg;
+		} else {
 			*debug_flags = 0;
+		}
 	}
-	return (debug_enabled);
+	return debug_enabled;
 }
 
 /*
@@ -521,29 +599,31 @@ PE_save_buffer_to_vram(unsigned char *buf, unsigned int *size)
 	}
 
 	*size = *size > panic_text_len ? panic_text_len : *size;
-	if (panic_info->eph_magic != EMBEDDED_PANIC_MAGIC)
+	if (panic_info->eph_magic != EMBEDDED_PANIC_MAGIC) {
 		printf("Error!! Current Magic 0x%X, expected value 0x%x", panic_info->eph_magic, EMBEDDED_PANIC_MAGIC);
+	}
 
 	/* CRC everything after the CRC itself - starting with the panic header version */
 	panic_info->eph_crc = crc32(0L, &panic_info->eph_version, (panic_text_len +
-				sizeof(struct embedded_panic_header) - offsetof(struct embedded_panic_header, eph_version)));
+	    sizeof(struct embedded_panic_header) - offsetof(struct embedded_panic_header, eph_version)));
 }
 
 uint32_t
 PE_get_offset_into_panic_region(char *location)
 {
-	assert(panic_info != NULL);
-	assert(location > (char *) panic_info);
-	assert((unsigned int)(location - (char *) panic_info) < panic_text_len);
+	assert(gPanicBase != 0);
+	assert(location >= (char *) gPanicBase);
+	assert((unsigned int)(location - gPanicBase) < gPanicSize);
 
-	return (uint32_t) (location - gPanicBase);
+	return (uint32_t)(uintptr_t)(location - gPanicBase);
 }
 
 void
 PE_init_panicheader()
 {
-	if (!panic_info)
+	if (!panic_info) {
 		return;
+	}
 
 	bzero(panic_info, sizeof(struct embedded_panic_header));
 
@@ -551,7 +631,7 @@ PE_init_panicheader()
 	 * The panic log begins immediately after the panic header -- debugger synchronization and other functions
 	 * may log into this region before we've become the exclusive panicking CPU and initialize the header here.
 	 */
-	panic_info->eph_panic_log_offset = PE_get_offset_into_panic_region(debug_buf_base);
+	panic_info->eph_panic_log_offset = debug_buf_base ? PE_get_offset_into_panic_region(debug_buf_base) : 0;
 
 	panic_info->eph_magic = EMBEDDED_PANIC_MAGIC;
 	panic_info->eph_version = EMBEDDED_PANIC_HEADER_CURRENT_VERSION;
@@ -568,8 +648,9 @@ PE_init_panicheader()
 void
 PE_update_panicheader_nestedpanic()
 {
-	if (!panic_info)
+	if (!panic_info) {
 		return;
+	}
 
 	/*
 	 * If the panic log offset is not set, re-init the panic header
@@ -595,7 +676,7 @@ PE_update_panicheader_nestedpanic()
 
 	/* If this assert fires, it's likely indicative of corruption in the panic region */
 	assert(((panic_info->eph_stackshot_offset == 0) && (panic_info->eph_stackshot_len == 0)) ||
-			((panic_info->eph_stackshot_offset != 0) && (panic_info->eph_stackshot_len != 0)));
+	    ((panic_info->eph_stackshot_offset != 0) && (panic_info->eph_stackshot_len != 0)));
 
 	/*
 	 * If we haven't set up the other log yet, set the beginning of the other log
@@ -617,7 +698,7 @@ PE_reboot_on_panic(void)
 	uint32_t debug_flags;
 
 	if (PE_i_can_has_debugger(&debug_flags)
-		&& (debug_flags & DB_NMI)) {
+	    && (debug_flags & DB_NMI)) {
 		/* kernel debugging is active */
 		return FALSE;
 	} else {
@@ -637,8 +718,9 @@ PE_sync_panic_buffers(void)
 	 * be discarded on reset.  If we can make sure the lines are flushed to L3/DRAM,
 	 * the platform reset handler will flush any L3.
 	 */
-	if (gPanicBase)
+	if (gPanicBase) {
 		CleanPoC_DcacheRegion_Force(gPanicBase, gPanicSize);
+	}
 }
 
 static void
@@ -693,5 +775,5 @@ void
 PE_mark_hwaccess(uint64_t thread)
 {
 	last_hwaccess_thread = thread;
-	asm volatile("dmb ish");
+	asm volatile ("dmb ish");
 }

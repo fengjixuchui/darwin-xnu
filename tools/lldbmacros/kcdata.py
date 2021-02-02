@@ -14,6 +14,7 @@ import subprocess
 import logging
 import contextlib
 import base64
+import zlib
 
 class Globals(object):
     pass
@@ -65,6 +66,7 @@ kcdata_type_def = {
     'STACKSHOT_KCCONTAINER_THREAD':     0x904,
     'STACKSHOT_KCTYPE_DONATING_PIDS':   0x907,
     'STACKSHOT_KCTYPE_SHAREDCACHE_LOADINFO': 0x908,
+    'STACKSHOT_KCTYPE_THREAD_NAME':     0x909,
     'STACKSHOT_KCTYPE_KERN_STACKFRAME': 0x90A,
     'STACKSHOT_KCTYPE_KERN_STACKFRAME64': 0x90B,
     'STACKSHOT_KCTYPE_USER_STACKFRAME': 0x90C,
@@ -95,6 +97,13 @@ kcdata_type_def = {
     'STACKSHOT_KCTYPE_ASID' : 0x925,
     'STACKSHOT_KCTYPE_PAGE_TABLES' : 0x926,
     'STACKSHOT_KCTYPE_SYS_SHAREDCACHE_LAYOUT' : 0x927,
+    'STACKSHOT_KCTYPE_THREAD_DISPATCH_QUEUE_LABEL' : 0x928,
+    'STACKSHOT_KCTYPE_THREAD_TURNSTILEINFO' : 0x929,
+    'STACKSHOT_KCTYPE_TASK_CPU_ARCHITECTURE' : 0x92a,
+    'STACKSHOT_KCTYPE_LATENCY_INFO' : 0x92b,
+    'STACKSHOT_KCTYPE_LATENCY_INFO_TASK' : 0x92c,
+    'STACKSHOT_KCTYPE_LATENCY_INFO_THREAD' : 0x92d,
+    'STACKSHOT_KCTYPE_LOADINFO64_TEXT_EXEC' : 0x92e,
 
     'STACKSHOT_KCTYPE_TASK_DELTA_SNAPSHOT': 0x940,
     'STACKSHOT_KCTYPE_THREAD_DELTA_SNAPSHOT': 0x941,
@@ -143,6 +152,7 @@ kcdata_type_def = {
     'KCDATA_BUFFER_BEGIN_CRASHINFO':       0xDEADF157,
     'KCDATA_BUFFER_BEGIN_DELTA_STACKSHOT': 0xDE17A59A,
     'KCDATA_BUFFER_BEGIN_STACKSHOT':       0x59a25807,
+    'KCDATA_BUFFER_BEGIN_COMPRESSED':      0x434f4d50,
     'KCDATA_BUFFER_BEGIN_OS_REASON':       0x53A20900,
     'KCDATA_BUFFER_BEGIN_XNUPOST_CONFIG':  0x1E21C09F
 }
@@ -418,8 +428,9 @@ class KCObject(object):
 
         if self.i_type == GetTypeForName('KCDATA_TYPE_CONTAINER_BEGIN'):
             self.__class__ = KCContainerObject
-
-        if self.i_type in KNOWN_TOPLEVEL_CONTAINER_TYPES:
+        elif self.i_type == GetTypeForName('KCDATA_BUFFER_BEGIN_COMPRESSED'):
+            self.__class__ = KCCompressedBufferObject
+        elif self.i_type in KNOWN_TOPLEVEL_CONTAINER_TYPES:
             self.__class__ = KCBufferObject
 
         self.InitAfterParse()
@@ -657,6 +668,40 @@ class KCBufferObject(KCContainerObject):
 
     no_end_message = "could not find buffer end marker"
 
+class KCCompressedBufferObject(KCContainerObject):
+
+    def ReadItems(self, iterator):
+        self.header = dict()
+        with INDENT.indent():
+            for i in iterator:
+                o = KCObject.FromKCItem(i)
+                if self.IsEndMarker(o):
+                    self.compressed_type = o.i_type
+                    self.blob_start = o.offset + 16
+                    break
+                o.ParseData()
+                self.header[o.i_name] = o.obj
+
+    def IsEndMarker(self, o):
+        return o.i_type in KNOWN_TOPLEVEL_CONTAINER_TYPES
+
+    def GetCompressedBlob(self, data):
+        if self.header['kcd_c_type'] != 1:
+            raise NotImplementedError
+        blob = data[self.blob_start:self.blob_start+self.header['kcd_c_totalout']]
+        if len(blob) != self.header['kcd_c_totalout']:
+            raise ValueError
+        return blob
+
+    def Decompress(self, data):
+        start_marker = struct.pack('<IIII', self.compressed_type, 0, 0, 0)
+        end_marker = struct.pack('<IIII', GetTypeForName('KCDATA_TYPE_BUFFER_END'), 0, 0, 0)
+        decompressed = zlib.decompress(self.GetCompressedBlob(data))
+        if len(decompressed) != self.header['kcd_c_totalin']:
+            raise ValueError, "length of decompressed: %d vs expected %d" % (len(decompressed), self.header['kcd_c_totalin'])
+        alignbytes = b'\x00' * (-len(decompressed) % 16)
+        return start_marker + decompressed + alignbytes + end_marker
+
 
 class KCData_item:
     """ a basic kcdata_item type object.
@@ -704,7 +749,7 @@ def kcdata_item_iterator(data):
 def _get_data_element(elementValues):
     return json.dumps(elementValues[-1])
 
-KNOWN_TOPLEVEL_CONTAINER_TYPES = map(GetTypeForName, ('KCDATA_BUFFER_BEGIN_CRASHINFO', 'KCDATA_BUFFER_BEGIN_STACKSHOT', 'KCDATA_BUFFER_BEGIN_DELTA_STACKSHOT', 'KCDATA_BUFFER_BEGIN_OS_REASON','KCDATA_BUFFER_BEGIN_XNUPOST_CONFIG'))
+KNOWN_TOPLEVEL_CONTAINER_TYPES = map(GetTypeForName, ('KCDATA_BUFFER_BEGIN_COMPRESSED', 'KCDATA_BUFFER_BEGIN_CRASHINFO', 'KCDATA_BUFFER_BEGIN_STACKSHOT', 'KCDATA_BUFFER_BEGIN_DELTA_STACKSHOT', 'KCDATA_BUFFER_BEGIN_OS_REASON','KCDATA_BUFFER_BEGIN_XNUPOST_CONFIG'))
 
 KNOWN_TYPES_COLLECTION[GetTypeForName('KCDATA_TYPE_UINT32_DESC')] = KCTypeDescription(GetTypeForName('KCDATA_TYPE_UINT32_DESC'), (
     KCSubTypeElement('desc', KCSUBTYPE_TYPE.KC_ST_CHAR, KCSubTypeElement.GetSizeForArray(32, 1), 0, 1),
@@ -821,6 +866,9 @@ KNOWN_TYPES_COLLECTION[0x906] = KCTypeDescription(0x906, (
     legacy_size = 0x68
 )
 
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_DISPATCH_QUEUE_LABEL')] = KCSubTypeElement('dispatch_queue_label', KCSUBTYPE_TYPE.KC_ST_CHAR,
+                          KCSubTypeElement.GetSizeForArray(64, 1), 0, 1)
+
 KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_DELTA_SNAPSHOT')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_THREAD_DELTA_SNAPSHOT'), (
     KCSubTypeElement.FromBasicCtype('tds_thread_id', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
     KCSubTypeElement.FromBasicCtype('tds_voucher_identifier', KCSUBTYPE_TYPE.KC_ST_UINT64, 8),
@@ -860,7 +908,7 @@ KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_TASK_DELTA_SNAPSHOT')] =
 )
 
 
-KNOWN_TYPES_COLLECTION[0x909] = KCSubTypeElement('pth_name', KCSUBTYPE_TYPE.KC_ST_CHAR, KCSubTypeElement.GetSizeForArray(64, 1), 0, 1)
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_NAME')] = KCSubTypeElement('pth_name', KCSUBTYPE_TYPE.KC_ST_CHAR, KCSubTypeElement.GetSizeForArray(64, 1), 0, 1)
 
 KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_SYS_SHAREDCACHE_LAYOUT')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_SYS_SHAREDCACHE_LAYOUT'), (
     KCSubTypeElement('imageLoadAddress', KCSUBTYPE_TYPE.KC_ST_UINT64, 8, 0, 0),
@@ -883,6 +931,13 @@ KNOWN_TYPES_COLLECTION[GetTypeForName('KCDATA_TYPE_LIBRARY_LOADINFO')] = KCTypeD
 ),
     'dyld_load_info',
     legacy_size = 20
+)
+
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_LOADINFO64_TEXT_EXEC')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_LOADINFO64_TEXT_EXEC'), (
+    KCSubTypeElement('imageLoadAddress', KCSUBTYPE_TYPE.KC_ST_UINT64, 8, 0, 0),
+    KCSubTypeElement('imageUUID', KCSUBTYPE_TYPE.KC_ST_UINT8, KCSubTypeElement.GetSizeForArray(16, 1), 8, 1),
+),
+    'dyld_load_info_text_exec'
 )
 
 KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_SHAREDCACHE_LOADINFO')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_SHAREDCACHE_LOADINFO'), (
@@ -997,6 +1052,16 @@ KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_WAITINFO')] = KCT
             ),
             'thread_waitinfo')
 
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_TURNSTILEINFO')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_THREAD_TURNSTILEINFO'),
+            (
+                        KCSubTypeElement.FromBasicCtype('waiter', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
+                        KCSubTypeElement.FromBasicCtype('turnstile_context', KCSUBTYPE_TYPE.KC_ST_UINT64, 8),
+                        KCSubTypeElement.FromBasicCtype('turnstile_priority', KCSUBTYPE_TYPE.KC_ST_UINT8, 16),
+                        KCSubTypeElement.FromBasicCtype('number_of_hops', KCSUBTYPE_TYPE.KC_ST_UINT8, 17),
+                        KCSubTypeElement.FromBasicCtype('turnstile_flags', KCSUBTYPE_TYPE.KC_ST_UINT64, 18),
+            ),
+            'thread_turnstileinfo')
+
 KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_THREAD_GROUP_SNAPSHOT')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_THREAD_GROUP'),
             (
                         KCSubTypeElement.FromBasicCtype('tgs_id', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
@@ -1026,6 +1091,52 @@ KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_INSTRS_CYCLES')] = KCTyp
                         KCSubTypeElement.FromBasicCtype('ics_cycles', KCSUBTYPE_TYPE.KC_ST_UINT64, 8)
             ),
             'instrs_cycles_snapshot')
+
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_TASK_CPU_ARCHITECTURE')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_TASK_CPU_ARCHITECTURE'),
+            (
+                        KCSubTypeElement.FromBasicCtype('cputype', KCSUBTYPE_TYPE.KC_ST_INT32, 0),
+                        KCSubTypeElement.FromBasicCtype('cpusubtype', KCSUBTYPE_TYPE.KC_ST_INT32, 4)
+            ),
+            'task_cpu_architecture')
+
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO'),
+            (
+                        KCSubTypeElement.FromBasicCtype('latency_version', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
+                        KCSubTypeElement.FromBasicCtype('setup_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 8),
+                        KCSubTypeElement.FromBasicCtype('total_task_iteration_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 16),
+                        KCSubTypeElement.FromBasicCtype('total_terminated_task_iteration_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 24)
+            ),
+            'stackshot_latency_collection')
+
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO_TASK')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO_TASK'),
+            (
+                        KCSubTypeElement.FromBasicCtype('task_uniqueid', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
+                        KCSubTypeElement.FromBasicCtype('setup_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 8),
+                        KCSubTypeElement.FromBasicCtype('task_thread_count_loop_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 16),
+                        KCSubTypeElement.FromBasicCtype('task_thread_data_loop_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 24),
+                        KCSubTypeElement.FromBasicCtype('cur_tsnap_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 32),
+                        KCSubTypeElement.FromBasicCtype('pmap_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 40),
+                        KCSubTypeElement.FromBasicCtype('bsd_proc_ids_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 48),
+                        KCSubTypeElement.FromBasicCtype('misc_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 56),
+                        KCSubTypeElement.FromBasicCtype('misc2_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 64),
+                        KCSubTypeElement.FromBasicCtype('end_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 72)
+            ),
+            'stackshot_latency_task')
+
+KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO_THREAD')] = KCTypeDescription(GetTypeForName('STACKSHOT_KCTYPE_LATENCY_INFO_THREAD'),
+            (
+                        KCSubTypeElement.FromBasicCtype('thread_id', KCSUBTYPE_TYPE.KC_ST_UINT64, 0),
+                        KCSubTypeElement.FromBasicCtype('cur_thsnap1_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 8),
+                        KCSubTypeElement.FromBasicCtype('dispatch_serial_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 16),
+                        KCSubTypeElement.FromBasicCtype('dispatch_label_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 24),
+                        KCSubTypeElement.FromBasicCtype('cur_thsnap2_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 32),
+                        KCSubTypeElement.FromBasicCtype('thread_name_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 40),
+                        KCSubTypeElement.FromBasicCtype('sur_times_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 48),
+                        KCSubTypeElement.FromBasicCtype('user_stack_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 56),
+                        KCSubTypeElement.FromBasicCtype('kernel_stack_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 64),
+                        KCSubTypeElement.FromBasicCtype('misc_latency', KCSUBTYPE_TYPE.KC_ST_UINT64, 72),
+            ),
+            'stackshot_latency_thread')
 
 def set_type(name, *args):
     typ = GetTypeForName(name)
@@ -1187,7 +1298,7 @@ KNOWN_TYPES_COLLECTION[GetTypeForName('STACKSHOT_KCTYPE_PAGE_TABLES')] = KCTypeD
 )
 
 def GetSecondsFromMATime(mat, tb):
-    return (float(mat) * tb['numer']) / tb['denom']
+    return (float(long(mat) * tb['numer']) / tb['denom']) / 1e9
 
 def FindLibraryForAddress(liblist, address):
     current_lib = None
@@ -1272,6 +1383,9 @@ kThreadWaitPThreadCondVar       = 0x0e
 kThreadWaitParkedWorkQueue      = 0x0f
 kThreadWaitWorkloopSyncWait     = 0x10
 kThreadWaitOnProcess            = 0x11
+kThreadWaitSleepWithInheritor   = 0x12
+kThreadWaitEventlink            = 0x13
+kThreadWaitCompressor           = 0x14
 
 
 UINT64_MAX = 0xffffffffffffffff
@@ -1282,6 +1396,13 @@ STACKSHOT_WAITOWNER_INTRANSIT   = (UINT64_MAX - 4)
 STACKSHOT_WAITOWNER_MTXSPIN     = (UINT64_MAX - 5)
 STACKSHOT_WAITOWNER_THREQUESTED = (UINT64_MAX - 6)
 STACKSHOT_WAITOWNER_SUSPENDED   = (UINT64_MAX - 7)
+
+STACKSHOT_TURNSTILE_STATUS_UNKNOWN         = 0x01
+STACKSHOT_TURNSTILE_STATUS_LOCKED_WAITQ    = 0x02
+STACKSHOT_TURNSTILE_STATUS_WORKQUEUE       = 0x04
+STACKSHOT_TURNSTILE_STATUS_THREAD          = 0x08
+STACKSHOT_TURNSTILE_STATUS_BLOCKED_ON_TASK = 0x10
+STACKSHOT_TURNSTILE_STATUS_HELD_IPLOCK     = 0x20
 
 def formatWaitInfo(info):
     s = 'thread %d: ' % info['waiter'];
@@ -1370,15 +1491,68 @@ def formatWaitInfo(info):
             s += ", unknown owner"
         s += ", workloop id %x" % context
     elif type == kThreadWaitOnProcess:
-        s += "waitpid, for pid %d" % owner
+        if owner == 2**64-1:
+            s += "waitpid, for any children"
+        elif 2**32 <= owner and owner < 2**64-1:
+            s += "waitpid, for process group %d" % abs(owner - 2**64)
+        else:
+            s += "waitpid, for pid %d" % owner
+    elif type == kThreadWaitSleepWithInheritor:
+        if owner == 0:
+            s += "turnstile, held waitq"
+        else:
+            s += "turnstile, pushing thread %d" % owner
+    elif type == kThreadWaitEventlink:
+        if owner == 0:
+            s += "eventlink, held waitq"
+        else:
+            s += "eventlink, signaled by thread %d" % owner
+    elif type == kThreadWaitCompressor:
+        s += "in compressor segment %x, busy for thread %d" % (context, owner)
 
     else:
         s += "unknown type %d (owner %d, context %x)" % (type, owner, context)
 
     return s
-        
 
-def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
+def formatTurnstileInfo(ti):
+    if ti is None:
+        return " [no turnstile]"
+
+    ts_flags = int(ti['turnstile_flags'])
+    ctx = int(ti['turnstile_context'])
+    hop = int(ti['number_of_hops'])
+    prio = int(ti['turnstile_priority'])
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_HELD_IPLOCK:
+        return " [turnstile blocked on task, but ip_lock was held]"
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_BLOCKED_ON_TASK:
+        return " [turnstile blocked on task pid %d, hops: %d, priority: %d]" % (ctx, hop, prio)
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_LOCKED_WAITQ:
+        return " [turnstile was in process of being updated]"
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_WORKQUEUE:
+        return " [blocked on workqueue: 0x%x, hops: %x, priority: %d]" % (ctx, hop, prio)
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_THREAD:
+        return " [blocked on: %d, hops: %x, priority: %d]" % (ctx, hop, prio)
+    if ts_flags & STACKSHOT_TURNSTILE_STATUS_UNKNOWN:
+        return " [turnstile with unknown inheritor]"
+
+    return " [unknown turnstile status!]"
+        
+def formatWaitInfoWithTurnstiles(waitinfos, tsinfos):
+    wis_tis = []
+    for w in waitinfos:
+        found_pair = False
+        for t in tsinfos:
+            if int(w['waiter']) == int(t['waiter']):
+                wis_tis.append((w, t))
+                found_pair = True
+                break
+        if not found_pair:
+            wis_tis.append((w, None))
+
+    return map(lambda (wi, ti): formatWaitInfo(wi) + formatTurnstileInfo(ti), wis_tis)
+
+def SaveStackshotReport(j, outfile_name, incomplete):
     import time
     from operator import itemgetter, attrgetter
     ss = j.get('kcdata_stackshot')
@@ -1386,50 +1560,27 @@ def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
         print "No KCDATA_BUFFER_BEGIN_STACKSHOT object found. Skipping writing report."
         return
 
-    timestamp = ss.get('usecs_since_epoch', int(time.time()))
+    timestamp = ss.get('usecs_since_epoch')
     try:
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S %z",time.gmtime(timestamp))
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S +0000",time.gmtime(timestamp / 1000000 if timestamp else None))
     except ValueError, e:
         print "couldn't convert timestamp:", str(e)
         timestamp = None
 
     os_version = ss.get('osversion', 'Unknown')
     timebase = ss.get('mach_timebase_info', {"denom": 1, "numer": 1})
-    if not dsc_uuid and 'imageSlidBaseAddress' not in ss.get('shared_cache_dyld_load_info'):
-        print "Stackshot format does not include slid shared cache base address and no UUID provided. Skipping writing report."
-        return
 
-    # If a shared cache UUID is provided, treat the slide as the base address
-    # for compatibility with existing tools that operate based on this logic
-    if dsc_uuid:
-        shared_cache_base_addr = ss.get('shared_cache_dyld_load_info')['imageLoadAddress']
-    elif 'imageSlidBaseAddress' in ss.get('shared_cache_dyld_load_info'):
-        shared_cache_base_addr = ss.get('shared_cache_dyld_load_info')['imageSlidBaseAddress']
-    else:
-        print "No shared cache UUID provided and data doesn't include imageSlidBaseAddress. Skipping writing report."
-        return
-
-    dsc_common = [format_uuid(ss.get('shared_cache_dyld_load_info')['imageUUID']),
-                  shared_cache_base_addr, "S" ]
+    dsc_common = None
+    shared_cache_info = ss.get('shared_cache_dyld_load_info')
+    if shared_cache_info:
+        shared_cache_base_addr = shared_cache_info['imageSlidBaseAddress']
+        dsc_common = [format_uuid(shared_cache_info['imageUUID']), shared_cache_info['imageSlidBaseAddress'], "S" ]
+        print "Shared cache UUID found from the binary data is <%s> " % str(dsc_common[0])
 
     dsc_layout = ss.get('system_shared_cache_layout')
 
     dsc_libs = []
-    print "Shared cache UUID found from the binary data is <%s> " % str(dsc_common[0])
-    if dsc_common[0].replace('-', '').lower() == dsc_uuid:
-        print "SUCCESS: Found Matching dyld shared cache uuid. Loading library load addresses from layout provided."
-        _load_addr = dsc_common[1]
-        #print _load_addr
-        #print dsc_libs_arr
-        for i in dsc_libs_arr:
-            _uuid = i[2].lower().replace('-','').strip()
-            _addr = int(i[0], 16) + _load_addr
-            dsc_libs.append([_uuid, _addr, "C"])
-            #print "adding ", [_uuid, _addr, "C"]
-    elif dsc_uuid:
-        print "Provided shared cache UUID does not match. Skipping writing report."
-        return
-    elif dsc_layout:
+    if dsc_layout:
         print "Found in memory system shared cache layout with {} images".format(len(dsc_layout))
         slide = ss.get('shared_cache_dyld_load_info')['imageLoadAddress']
 
@@ -1465,6 +1616,11 @@ def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
         kl_infos = ssplist["0"].get("dyld_load_info", [])
         for dlinfo in kl_infos:
             kern_load_info.append([format_uuid(dlinfo['imageUUID']), dlinfo['imageLoadAddress'], "K"])
+
+        kl_infos_text_exec = ssplist["0"].get("dyld_load_info_text_exec", [])
+        for dlinfo in kl_infos_text_exec:
+            kern_load_info.append([format_uuid(dlinfo['imageUUID']), dlinfo['imageLoadAddress'], "T"])
+
     for pid,piddata in ssplist.iteritems():
         processByPid[str(pid)] = {}
         tsnap = processByPid[str(pid)]
@@ -1478,11 +1634,10 @@ def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
 
             pr_lib_dsc = [format_uuid(tsnap.get('shared_cache_dyld_load_info')['imageUUID']),
                           tsnap.get('shared_cache_dyld_load_info')['imageSlidBaseAddress'],
-                          "S"
-                         ]
+                          "S"]
 
         pr_libs = []
-        if len(dsc_libs) == 0:
+        if len(dsc_libs) == 0 and pr_lib_dsc:
             pr_libs.append(pr_lib_dsc)
         _lib_type = "P"
         if int(pid) == 0:
@@ -1538,6 +1693,9 @@ def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
             thsnap["qosEffective"] = threadsnap["ths_eqos"]
             thsnap["qosRequested"] = threadsnap["ths_rqos"]
 
+            if "pth_name" in thdata:
+                thsnap["name"] = thdata["pth_name"];
+
             if threadsnap['ths_continuation']:
                 thsnap["continuation"] = GetSymbolInfoForFrame(AllImageCatalog, pr_libs, threadsnap['ths_continuation'])
             if "kernel_stack_frames" in thdata:
@@ -1559,7 +1717,9 @@ def SaveStackshotReport(j, outfile_name, dsc_uuid, dsc_libs_arr, incomplete):
             if threadsnap['ths_wait_event']:
                 thsnap["waitEvent"] = GetSymbolInfoForFrame(AllImageCatalog, pr_libs, threadsnap['ths_wait_event'])
 
-        if 'thread_waitinfo' in piddata:
+        if 'thread_waitinfo' in piddata and 'thread_turnstileinfo' in piddata:
+            tsnap['waitInfo'] = formatWaitInfoWithTurnstiles(piddata['thread_waitinfo'] , piddata['thread_turnstileinfo'])
+        elif 'thread_waitinfo' in piddata:
             tsnap['waitInfo'] = map(formatWaitInfo, piddata['thread_waitinfo'])
 
     obj['binaryImages'] = AllImageCatalog
@@ -1598,38 +1758,6 @@ def RunCommand(bash_cmd_string, get_stderr = True):
     finally:
         return (exit_code, output_str)
 
-def ProcessDyldSharedCacheFile(shared_cache_file_path, sdk_str=""):
-    """ returns (uuid, text_info) output from shared_cache_util.
-                In case of error None is returned and err message is printed to stdout.
-    """
-    if not os.path.exists(shared_cache_file_path):
-        print "File path: %s does not exists" % shared_cache_file_path
-        return None
-    if sdk_str:
-        sdk_str = ' -sdk "%s" ' % sdk_str
-    (c, so) = RunCommand("xcrun {} -find dyld_shared_cache_util".format(sdk_str))
-    if c:
-        print "Failed to find path to dyld_shared_cache_util. Exit code: %d , message: %s" % (c,so)
-        return None
-    dyld_shared_cache_util = so.strip()
-    (c, so) = RunCommand("{} -info {}".format(dyld_shared_cache_util, shared_cache_file_path))
-    if c:
-        print "Failed to get uuid info from %s" % shared_cache_file_path
-        print so
-        return None
-
-    uuid = so.splitlines()[0].split(": ")[-1].strip().replace("-","").lower()
-
-    (c, so) = RunCommand("{} -text_info {}".format(dyld_shared_cache_util, shared_cache_file_path))
-    if c:
-        print "Failed to get text_info from %s" % shared_cache_file_path
-        print so
-        return None
-
-    print "Found %s uuid: %s" % (shared_cache_file_path, uuid)
-    text_info = so
-
-    return (uuid, so)
 
 parser = argparse.ArgumentParser(description="Decode a kcdata binary file.")
 parser.add_argument("-l", "--listtypes", action="store_true", required=False, default=False,
@@ -1645,10 +1773,7 @@ parser.add_argument("--multiple", help="look for multiple stackshots in a single
 parser.add_argument("-p", "--plist", required=False, default=False,
                     help="output as plist", action="store_true")
 
-parser.add_argument("-U", "--uuid", required=False, default="", help="UUID of dyld shared cache to be analysed and filled in libs of stackshot report", dest="uuid")
-parser.add_argument("-L", "--layout", required=False, type=argparse.FileType("r"), help="Path to layout file for DyldSharedCache. You can generate one by doing \n\tbash$xcrun -sdk <sdk> dyld_shared_cache_util -text_info </path/to/dyld_shared_cache> ", dest="layout")
 parser.add_argument("-S", "--sdk", required=False, default="", help="sdk property passed to xcrun command to find the required tools. Default is empty string.", dest="sdk")
-parser.add_argument("-D", "--dyld_shared_cache", required=False, default="", help="Path to dyld_shared_cache built by B&I", dest="dsc")
 parser.add_argument("--pretty", default=False, action='store_true', help="make the output a little more human readable")
 parser.add_argument("--incomplete", action='store_true', help="accept incomplete data")
 parser.add_argument("kcdata_file", type=argparse.FileType('r'), help="Path to a kcdata binary file.")
@@ -1674,6 +1799,18 @@ def iterate_kcdatas(kcdata_file):
     with data_from_stream(kcdata_file) as data:
         iterator = kcdata_item_iterator(data)
         kcdata_buffer = KCObject.FromKCItem(iterator.next())
+
+        if isinstance(kcdata_buffer, KCCompressedBufferObject):
+            kcdata_buffer.ReadItems(iterator)
+            decompressed = kcdata_buffer.Decompress(data)
+            iterator = kcdata_item_iterator(decompressed)
+            kcdata_buffer = KCObject.FromKCItem(iterator.next())
+
+        if not isinstance(kcdata_buffer, KCBufferObject):
+            # ktrace stackshot chunk
+            iterator = kcdata_item_iterator(data[16:])
+            kcdata_buffer = KCObject.FromKCItem(iterator.next())
+
         if not isinstance(kcdata_buffer, KCBufferObject):
             try:
                 decoded = base64.b64decode(data)
@@ -1692,14 +1829,18 @@ def iterate_kcdatas(kcdata_file):
             else:
                 iterator = kcdata_item_iterator(decompressed)
                 kcdata_buffer = KCObject.FromKCItem(iterator.next())
+
         if not isinstance(kcdata_buffer, KCBufferObject):
             raise Exception, "unknown file type"
+
 
         kcdata_buffer.ReadItems(iterator)
         yield kcdata_buffer
 
         for magic in iterator:
             kcdata_buffer = KCObject.FromKCItem(magic)
+            if kcdata_buffer.i_type == 0:
+                continue
             if not isinstance(kcdata_buffer, KCBufferObject):
                 raise Exception, "unknown file type"
             kcdata_buffer.ReadItems(iterator)
@@ -1722,7 +1863,6 @@ def prettify(data):
             elif key == 'thread_waitinfo':
                 value = map(formatWaitInfo, value)
             elif key == 'stack_contents':
-                print value
                 (address,) = struct.unpack("<Q", struct.pack("B"*8, *value))
                 value = '0x%X' % address
             else:
@@ -1767,21 +1907,8 @@ if __name__ == '__main__':
         if args.pretty:
             json_obj = prettify(json_obj)
 
-        dsc_uuid = None
-        dsc_libs_arr = []
-        libs_re = re.compile("^\s*(0x[a-fA-F0-9]+)\s->\s(0x[a-fA-F0-9]+)\s+<([a-fA-F0-9\-]+)>\s+.*$", re.MULTILINE)
-        if args.uuid and args.layout:
-            dsc_uuid = args.uuid.strip().replace("-",'').lower()
-            dsc_libs_arr = libs_re.findall(args.layout.read())
-
-        if args.dsc:
-            _ret = ProcessDyldSharedCacheFile(args.dsc, args.sdk)
-            if _ret:
-                dsc_uuid = _ret[0]
-                dsc_libs_arr = libs_re.findall(_ret[1])
-
         if args.stackshot_file:
-            SaveStackshotReport(json_obj, args.stackshot_file, dsc_uuid, dsc_libs_arr, G.data_was_incomplete)
+            SaveStackshotReport(json_obj, args.stackshot_file, G.data_was_incomplete)
         elif args.plist:
             import Foundation
             plist = Foundation.NSPropertyListSerialization.dataWithPropertyList_format_options_error_(

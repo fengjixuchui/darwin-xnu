@@ -56,8 +56,10 @@ _thread_call_enter1_delayed
 _thread_call_enter_delayed
 _thread_call_free
 _thread_deallocate
+_thread_has_thread_name
 _thread_policy_set
 _thread_reference
+_thread_set_thread_name
 _thread_terminate
 _thread_tid
 _thread_wakeup_prim
@@ -65,3 +67,4 @@ _vm_kernel_addrhash:_vm_kernel_addrhash_external
 _vm_kernel_addrhide
 _vm_kernel_addrperm_external
 _vm_kernel_unslide_or_perm_external
+_vm_stats

@@ -33,22 +33,22 @@
 #include <vm/vm_page.h>
 
 extern vm_offset_t vm_kernel_stext;
-extern void	*version;
-extern void	*kmod;
-extern void	*kdp_trans_off;
-extern void	*osversion;
-extern void	*flag_kdp_trigger_reboot;
-extern void	*manual_pkt;
-extern struct vm_object pmap_object_store;	/* store pt pages */
+extern void     *version;
+extern void     *kmod;
+extern void     *kdp_trans_off;
+extern void     *osversion;
+extern void     *flag_kdp_trigger_reboot;
+extern void     *manual_pkt;
+extern struct vm_object pmap_object_store;      /* store pt pages */
 
 lowglo lowGlo __attribute__ ((aligned(PAGE_MAX_SIZE))) = {
-	.lgVerCode = { 'O','c','t','o','p','u','s',' ' },
+	.lgVerCode = { 'O', 'c', 't', 'o', 'p', 'u', 's', ' ' },
 	// Increment the major version for changes that break the current Astris
 	// usage of lowGlo values
 	// Increment the minor version for changes that provide additonal info/function
 	// but does not break current usage
 	.lgLayoutMajorVersion = 3,
-	.lgLayoutMinorVersion = 0,
+	.lgLayoutMinorVersion = 2,
 	.lgLayoutMagic = LOWGLO_LAYOUT_MAGIC,
 	.lgVersion = (uint32_t)&version,
 	.lgKmodptr = (uint32_t)&kmod,
@@ -58,32 +58,46 @@ lowglo lowGlo __attribute__ ((aligned(PAGE_MAX_SIZE))) = {
 #endif
 	.lgOSVersion = (uint32_t)&osversion,
 #if MACH_KDP && CONFIG_KDP_INTERACTIVE_DEBUGGING
-	.lgRebootFlag	= (uint32_t)&flag_kdp_trigger_reboot,
+	.lgRebootFlag   = (uint32_t)&flag_kdp_trigger_reboot,
 	.lgManualPktAddr = (uint32_t)&manual_pkt,
 #endif
 	.lgPmapMemQ = (uint32_t)&(pmap_object_store.memq),
 	.lgPmapMemPageOffset = offsetof(struct vm_page_with_ppnum, vmp_phys_page),
 	.lgPmapMemChainOffset = offsetof(struct vm_page, vmp_listq),
 	.lgPmapMemPagesize = (uint32_t)sizeof(struct vm_page),
-
 	.lgPmapMemStartAddr = -1,
 	.lgPmapMemEndAddr = -1,
-	.lgPmapMemFirstppnum = -1
+	.lgPmapMemFirstppnum = -1,
+	.lgVmFirstPhys = -1,
+	.lgVmLastPhys = -1
 };
 
-void patch_low_glo(void)
+void
+patch_low_glo(void)
 {
 	lowGlo.lgStext = (uint32_t)vm_kernel_stext;
 }
 
-void patch_low_glo_static_region(uint32_t address, uint32_t size)
+void
+patch_low_glo_static_region(uint32_t address, uint32_t size)
 {
 	lowGlo.lgStaticAddr = address;
 	lowGlo.lgStaticSize = size;
+
+	/**
+	 * These values are set in pmap_bootstrap() and represent the range of
+	 * kernel managed memory.
+	 */
+	extern const pmap_paddr_t vm_first_phys;
+	extern const pmap_paddr_t vm_last_phys;
+	assertf((vm_first_phys != 0) && (vm_last_phys != 0),
+	    "Tried setting the Low Globals before pmap_bootstrap()");
+	lowGlo.lgVmFirstPhys = vm_first_phys;
+	lowGlo.lgVmLastPhys = vm_last_phys;
 }
 
-
-void patch_low_glo_vm_page_info(void * start_addr, void * end_addr, uint32_t first_ppnum)
+void
+patch_low_glo_vm_page_info(void * start_addr, void * end_addr, uint32_t first_ppnum)
 {
 	lowGlo.lgPmapMemStartAddr = (uint32_t)start_addr;
 	lowGlo.lgPmapMemEndAddr = (uint32_t)end_addr;

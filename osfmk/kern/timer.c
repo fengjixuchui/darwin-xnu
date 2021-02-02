@@ -62,7 +62,9 @@
 #include <kern/sched_prim.h>
 #include <kern/timer.h>
 
-#if CONFIG_EMBEDDED
+#include <machine/config.h>
+
+#if CONFIG_SKIP_PRECISE_USER_KERNEL_TIME && !HAS_FAST_CNTVCT
 int precise_user_kernel_time = 0;
 #else
 int precise_user_kernel_time = 1;
@@ -79,7 +81,7 @@ timer_delta(timer_t timer, uint64_t *prev_in_cur_out)
 {
 	uint64_t old = *prev_in_cur_out;
 	uint64_t new = *prev_in_cur_out = timer_grab(timer);
-	return (new - old);
+	return new - old;
 }
 
 static void
@@ -89,11 +91,11 @@ timer_advance(timer_t timer, uint64_t delta)
 	timer->all_bits += delta;
 #else /* defined(__LP64__) */
 	extern void timer_advance_internal_32(timer_t timer, uint32_t high,
-			uint32_t low);
+	    uint32_t low);
 	uint64_t low = delta + timer->low_bits;
 	if (low >> 32) {
 		timer_advance_internal_32(timer,
-				(uint32_t)(timer->high_bits + (low >> 32)), (uint32_t)low);
+		    (uint32_t)(timer->high_bits + (low >> 32)), (uint32_t)low);
 	} else {
 		timer->low_bits = (uint32_t)low;
 	}
@@ -139,10 +141,10 @@ processor_timer_switch_thread(uint64_t tstamp, timer_t new_timer)
 	timer_t timer;
 
 	/* Update current timer. */
-	timer = PROCESSOR_DATA(processor, thread_timer);
+	timer = processor->thread_timer;
 	timer_advance(timer, tstamp - timer->tstamp);
 
 	/* Start new timer. */
-	PROCESSOR_DATA(processor, thread_timer) = new_timer;
+	processor->thread_timer = new_timer;
 	new_timer->tstamp = tstamp;
 }

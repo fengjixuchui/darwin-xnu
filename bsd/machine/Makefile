@@ -13,6 +13,9 @@ DATAFILES = \
 	vmparam.h _types.h _limits.h _param.h \
 	_mcontext.h
 
+DRIVERKIT_DATAFILES = \
+	limits.h types.h _types.h endian.h
+
 PRIVATE_DATAFILES = \
 	disklabel.h
 
@@ -24,7 +27,13 @@ KERNELFILES = \
 	vmparam.h _types.h _limits.h _param.h \
 	_mcontext.h
 
+MODULEMAP_INCDIR_FILES = \
+	machine_types.modulemap
+
+INSTALL_MODULEMAP_INCDIR_MI_LIST = ${MODULEMAP_INCDIR_FILES}
+
 INSTALL_MI_LIST = ${DATAFILES}
+INSTALL_DRIVERKIT_MI_LIST = ${DRIVERKIT_DATAFILES}
 INSTALL_MI_LCL_LIST = ${PRIVATE_DATAFILES}
 
 INSTALL_MI_DIR = machine

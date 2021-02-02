@@ -129,14 +129,19 @@ and the behavior is identical to a call to
 The flags specified
 for the
 .Fa oflag
-argument are formed by
-.Em or Ns 'ing
-the following values:
+argument must include exactly one of the following file access modes:
 .Pp
 .Bd -literal -offset indent -compact
 O_RDONLY	open for reading only
 O_WRONLY	open for writing only
 O_RDWR		open for reading and writing
+.Ed
+.Pp
+In addition any combination of the following values can be
+.Em or Ns 'ed in
+.Fa oflag:
+.Pp
+.Bd -literal -offset indent -compact
 O_NONBLOCK	do not block on open or for data to become available
 O_APPEND	append on each write
 O_CREAT		create file if it does not exist
@@ -148,6 +153,7 @@ O_NOFOLLOW	do not follow symlinks
 O_SYMLINK	allow open of symlinks
 O_EVTONLY	descriptor requested for event notifications only
 O_CLOEXEC	mark as close-on-exec
+O_NOFOLLOW_ANY	do not follow symlinks in the entire path.
 .Ed
 .Pp
 Opening a file with
@@ -229,6 +235,14 @@ flag.  The state of the file descriptor flags can be inspected
 using the F_GETFD fcntl.  See
 .Xr fcntl 2 .
 .Pp
+If
+.Dv O_NOFOLLOW_ANY
+is used in the mask and any component of the path passed to
+.Fn open
+is a symbolic link then the
+.Fn open
+will fail.
+.Pp
 If successful,
 .Fn open
 returns a non-negative integer, termed a file descriptor.
@@ -248,6 +262,8 @@ and
 .Pp
 The system imposes a limit on the number of file descriptors
 that can be held open simultaneously by one process.
+.Pp
+A file's metadata can be updated even if the file was opened in read-only mode.
 .Xr Getdtablesize 2
 returns the current system limit.
 .Sh RETURN VALUES
@@ -349,6 +365,11 @@ The system file table is full.
 .Dv O_NOFOLLOW
 was specified and the target is a symbolic link.
 .\" ===========
+.\" ===========
+.It Bq Er ELOOP
+.Dv O_NOFOLLOW_ANY
+was specified and and a component of the path is a symbolic link.
+.\" ===========
 .It Bq Er ENOENT
 .Dv O_CREAT
 is not set and the named file does not exist.
@@ -421,6 +442,8 @@ argument is not an absolute path and
 is neither
 .Dv AT_FDCWD
 nor a file descriptor associated with a directory.
+.It Bq Eq EILSEQ
+The filename does not match the encoding rules.
 .El
 .Sh COMPATIBILITY
 .Fn open

@@ -35,13 +35,15 @@
 	.align	2
 	.globl	EXT(machine_set_current_thread)
 LEXT(machine_set_current_thread)
+	ldr		r1, [r0, ACT_CPUDATAP]
+	str		r0, [r1, CPU_ACTIVE_THREAD]
 	mcr		p15, 0, r0, c13, c0, 4				// Write TPIDRPRW
 	ldr		r1, [r0, TH_CTH_SELF]
 	mrc		p15, 0, r2, c13, c0, 3				// Read TPIDRURO
 	and		r2, r2, #3							// Extract cpu number
 	orr		r1, r1, r2							//
 	mcr		p15, 0, r1, c13, c0, 3				// Write TPIDRURO
-	ldr		r1, [r0, TH_CTH_DATA]
+	mov		r1, #0
 	mcr		p15, 0, r1, c13, c0, 2				// Write TPIDRURW
 	bx		lr
 
@@ -113,9 +115,7 @@ LEXT(timer_grab)
 0:
 	ldr		r2, [r0, TIMER_HIGH]
 	ldr		r3, [r0, TIMER_LOW]
-#if	__ARM_SMP__
 	dmb		ish									// dmb ish
-#endif
 	ldr		r1, [r0, TIMER_HIGHCHK]
 	cmp		r1, r2
 	bne		0b
@@ -126,13 +126,9 @@ LEXT(timer_grab)
 	.globl	EXT(timer_advance_internal_32)
 LEXT(timer_advance_internal_32)
 	str		r1, [r0, TIMER_HIGHCHK]
-#if	__ARM_SMP__
 	dmb		ish									// dmb ish
-#endif
 	str		r2, [r0, TIMER_LOW]
-#if	__ARM_SMP__
 	dmb		ish									// dmb ish
-#endif
 	str		r1, [r0, TIMER_HIGH]
 	bx		lr
 
@@ -207,11 +203,7 @@ LEXT(sync_tlb_flush)
 
 .macro FLUSH_MMU_TLB
 	mov     r0, #0
-#if	__ARM_SMP__
 	mcr     p15, 0, r0, c8, c3, 0				// Invalidate Inner Shareable entire TLBs
-#else
-	mcr     p15, 0, r0, c8, c7, 0				// Invalidate entire TLB
-#endif
 .endmacro
 
 /*
@@ -271,11 +263,7 @@ LEXT(flush_core_tlb)
 	bx	lr
 
 .macro FLUSH_MMU_TLB_ENTRY
-#if	__ARM_SMP__
 	mcr     p15, 0, r0, c8, c3, 1				// Invalidate TLB  Inner Shareableentry
-#else
-	mcr     p15, 0, r0, c8, c7, 1				// Invalidate TLB entry
-#endif
 .endmacro
 /*
  *	void flush_mmu_tlb_entry_async(uint32_t)
@@ -304,11 +292,7 @@ LEXT(flush_mmu_tlb_entry)
 
 .macro FLUSH_MMU_TLB_ENTRIES
 1:
-#if	__ARM_SMP__
 	mcr     p15, 0, r0, c8, c3, 1				// Invalidate TLB Inner Shareable entry 
-#else
-	mcr     p15, 0, r0, c8, c7, 1				// Invalidate TLB entry
-#endif
 	add	r0, r0, ARM_PGBYTES				// Increment to the next page
 	cmp	r0, r1						// Loop if current address < end address
 	blt	1b
@@ -341,11 +325,7 @@ LEXT(flush_mmu_tlb_entries)
 
 
 .macro FLUSH_MMU_TLB_MVA_ENTRIES
-#if	__ARM_SMP__
 	mcr     p15, 0, r0, c8, c3, 3				// Invalidate TLB Inner Shareable entries by mva
-#else
-	mcr     p15, 0, r0, c8, c7, 3				// Invalidate TLB Inner Shareable entries by mva
-#endif
 .endmacro
 
 /*
@@ -374,11 +354,7 @@ LEXT(flush_mmu_tlb_mva_entries)
 	bx	lr
 
 .macro FLUSH_MMU_TLB_ASID
-#if	__ARM_SMP__
 	mcr     p15, 0, r0, c8, c3, 2				// Invalidate TLB Inner Shareable entries by asid
-#else
-	mcr     p15, 0, r0, c8, c7, 2				// Invalidate TLB entries by asid
-#endif
 .endmacro
 
 /*
@@ -471,7 +447,6 @@ LEXT(set_mmu_ttb_alternate)
 	.globl EXT(get_mmu_ttb)
 LEXT(get_mmu_ttb)
 	mrc		p15, 0, r0, c2, c0, 0				// translation table to r0
-	isb
 	bx		lr
 
 /*
@@ -621,15 +596,21 @@ LEXT(set_context_id)
 	isb
 	bx		lr
 
-#define	COPYIO_VALIDATE(NAME)						\
-	/* call NAME_validate to check the arguments */			;\
-	push		{r0, r1, r2, r7, lr}				;\
-	add		r7, sp, #12					;\
-	blx		EXT(NAME##_validate)				;\
-	cmp		r0, #0						;\
-	addne           sp, #12						;\
-	popne		{r7, pc}					;\
-	pop		{r0, r1, r2, r7, lr}				;\
+/*
+ * arg0: prefix of the external validator function (copyin or copyout)
+ * arg1: 0-based index of highest argument register that must be preserved
+ */
+.macro COPYIO_VALIDATE
+	/* call NAME_validate to check the arguments */
+	push		{r0-r$1, r7, lr}
+	add		r7, sp, #(($1 + 1) * 4)
+	blx		EXT($0_validate)
+	cmp		r0, #0
+	addne           sp, #(($1 + 1) * 4)
+	popne		{r7, pc}
+	pop		{r0-r$1, r7, lr}
+.endmacro
+
 
 #define	COPYIO_SET_RECOVER()						\
 	/* set recovery address */					;\
@@ -735,7 +716,7 @@ LEXT(copyinstr)
 	moveq		r12, #0
 	streq		r12, [r3]
 	bxeq		lr
-	COPYIO_VALIDATE(copyin)
+	COPYIO_VALIDATE copyin_user, 3
 	stmfd	sp!, { r4, r5, r6 }
 	
 	mov		r6, r3
@@ -786,7 +767,7 @@ copyinstr_error:
 	.globl EXT(copyin)
 LEXT(copyin)
 	COPYIO_HEADER()
-	COPYIO_VALIDATE(copyin)
+	COPYIO_VALIDATE copyin, 2
 	COPYIO_TRY_KERNEL()
 	COPYIO_SET_RECOVER()
 	COPYIO_MAP_USER()
@@ -803,7 +784,7 @@ LEXT(copyin)
 	.globl EXT(copyout)
 LEXT(copyout)
 	COPYIO_HEADER()
-	COPYIO_VALIDATE(copyout)
+	COPYIO_VALIDATE copyout, 2
 	COPYIO_TRY_KERNEL()
 	COPYIO_SET_RECOVER()
 	COPYIO_MAP_USER()
@@ -814,34 +795,96 @@ LEXT(copyout)
 
 
 /*
- *  int copyin_word(const user_addr_t user_addr, uint64_t *kernel_addr, vm_size_t nbytes)
+ *  int copyin_atomic32(const user_addr_t user_addr, uint32_t *kernel_addr)
+ *    r0: user_addr
+ *    r1: kernel_addr
  */
 	.text
 	.align 2
-	.globl EXT(copyin_word)
-LEXT(copyin_word)
-	cmp		r2, #4			// Test if size is 4 or 8
-	cmpne		r2, #8
-	bne		L_copyin_invalid
-	sub		r3, r2, #1
-	tst		r0, r3			// Test alignment of user address
-	bne		L_copyin_invalid
+	.globl EXT(copyin_atomic32)
+LEXT(copyin_atomic32)
+	tst		r0, #3			// Test alignment of user address
+	bne		2f
 
-	COPYIO_VALIDATE(copyin)
+	mov		r2, #4
+	COPYIO_VALIDATE copyin_user, 1
 	COPYIO_SET_RECOVER()
 	COPYIO_MAP_USER()
 
-	mov		r3, #0			// Clear high register
-	cmp		r2, #4			// If size is 4
-	ldreq		r2, [r0]		// 	Load word from user
-	ldrdne		r2, r3, [r0]		// Else Load double word from user
+	ldr		r2, [r0]		// Load word from user
+	str		r2, [r1]		// Store to kernel_addr
+	mov		r0, #0			// Success
+
+	COPYIO_UNMAP_USER()
+	COPYIO_RESTORE_RECOVER()
+	bx		lr
+2:	// misaligned copyin
+	mov		r0, #EINVAL
+	bx		lr
+
+/*
+ *  int copyin_atomic32_wait_if_equals(const char *src, uint32_t value)
+ *    r0: user_addr
+ *    r1: value
+ */
+	.text
+	.align 2
+	.globl EXT(copyin_atomic32_wait_if_equals)
+LEXT(copyin_atomic32_wait_if_equals)
+	tst		r0, #3			// Test alignment of user address
+	bne		2f
+
+	mov		r2, r0
+	mov		r3, #4
+	COPYIO_VALIDATE copyio_user, 1		// validate user address (uses r2, r3)
+	COPYIO_SET_RECOVER()
+	COPYIO_MAP_USER()
+
+	ldrex		r2, [r0]
+	cmp		r2, r1
+	movne		r0, ESTALE
+	bne		1f
+	mov		r0, #0
+	wfe
+1:
+	clrex
+
+	COPYIO_UNMAP_USER()
+	COPYIO_RESTORE_RECOVER()
+	bx		lr
+2:	// misaligned copyin
+	mov		r0, #EINVAL
+	bx		lr
+
+/*
+ *  int copyin_atomic64(const user_addr_t user_addr, uint64_t *kernel_addr)
+ *    r0: user_addr
+ *    r1: kernel_addr
+ */
+	.text
+	.align 2
+	.globl EXT(copyin_atomic64)
+LEXT(copyin_atomic64)
+	tst		r0, #7			// Test alignment of user address
+	bne		2f
+
+	mov		r2, #8
+	COPYIO_VALIDATE copyin_user, 1
+	COPYIO_SET_RECOVER()
+	COPYIO_MAP_USER()
+
+1:	// ldrex/strex retry loop
+	ldrexd		r2, r3, [r0]		// Load double word from user
+	strexd		r5, r2, r3, [r0]	// (the COPYIO_*() macros make r5 safe to use as a scratch register here)
+	cmp		r5, #0
+	bne		1b
 	stm		r1, {r2, r3}		// Store to kernel_addr
 	mov		r0, #0			// Success
 
 	COPYIO_UNMAP_USER()
 	COPYIO_RESTORE_RECOVER()
 	bx		lr
-L_copyin_invalid:
+2:	// misaligned copyin
 	mov		r0, #EINVAL
 	bx		lr
 
@@ -852,6 +895,69 @@ copyio_error:
 	str		r4, [r12, TH_RECOVER]
 	ldmfd		sp!, { r4, r5, r6 }
 	bx		lr
+
+
+/*
+ *  int copyout_atomic32(uint32_t value, user_addr_t user_addr)
+ *    r0: value
+ *    r1: user_addr
+ */
+	.text
+	.align 2
+	.globl EXT(copyout_atomic32)
+LEXT(copyout_atomic32)
+	tst		r1, #3			// Test alignment of user address
+	bne		2f
+
+	mov		r2, r1
+	mov		r3, #4
+	COPYIO_VALIDATE copyio_user, 1		// validate user address (uses r2, r3)
+	COPYIO_SET_RECOVER()
+	COPYIO_MAP_USER()
+
+	str		r0, [r1]		// Store word to user
+	mov		r0, #0			// Success
+
+	COPYIO_UNMAP_USER()
+	COPYIO_RESTORE_RECOVER()
+	bx		lr
+2:	// misaligned copyout
+	mov		r0, #EINVAL
+	bx		lr
+
+
+/*
+ *  int copyout_atomic64(uint64_t value, user_addr_t user_addr)
+ *    r0, r1: value
+ *    r2: user_addr
+ */
+	.text
+	.align 2
+	.globl EXT(copyout_atomic64)
+LEXT(copyout_atomic64)
+	tst		r2, #7			// Test alignment of user address
+	bne		2f
+
+	mov		r3, #8
+	COPYIO_VALIDATE copyio_user, 2		// validate user address (uses r2, r3)
+	COPYIO_SET_RECOVER()
+	COPYIO_MAP_USER()
+
+1:	// ldrex/strex retry loop
+	ldrexd		r4, r5, [r2]
+	strexd		r3, r0, r1, [r2]	// Atomically store double word to user
+	cmp		r3, #0
+	bne		1b
+
+	mov		r0, #0			// Success
+
+	COPYIO_UNMAP_USER()
+	COPYIO_RESTORE_RECOVER()
+	bx		lr
+2:	// misaligned copyout
+	mov		r0, #EINVAL
+	bx		lr
+
 
 /*
  * int copyin_kern(const user_addr_t user_addr, char *kernel_addr, vm_size_t nbytes)
@@ -1050,16 +1156,12 @@ LEXT(reenable_async_aborts)
 	bx		lr
 
 /*
- *	uint64_t ml_get_timebase(void)
+ *	uint64_t ml_get_speculative_timebase(void)
  */
 	.text
 	.align 2
-	.globl EXT(ml_get_timebase)
-LEXT(ml_get_timebase)
-	mrc		p15, 0, r12, c13, c0, 4						// Read TPIDRPRW
-	ldr		r3, [r12, ACT_CPUDATAP]						// Get current cpu data
-#if __ARM_TIME__ || __ARM_TIME_TIMEBASE_ONLY__
-	isb													// Required by ARMV7C.b section B8.1.2, ARMv8 section D6.1.2.
+	.globl EXT(ml_get_speculative_timebase)
+LEXT(ml_get_speculative_timebase)
 1:
 	mrrc	p15, 0, r3, r1, c14							// Read the Time Base (CNTPCT), high => r1
 	mrrc	p15, 0, r0, r3, c14							// Read the Time Base (CNTPCT), low => r0
@@ -1067,21 +1169,32 @@ LEXT(ml_get_timebase)
 	cmp		r1, r2
 	bne		1b											// Loop until both high values are the same
 
+	mrc		p15, 0, r12, c13, c0, 4						// Read TPIDRPRW
 	ldr		r3, [r12, ACT_CPUDATAP]						// Get current cpu data
 	ldr		r2, [r3, CPU_BASE_TIMEBASE_LOW]				// Add in the offset to
 	adds	r0, r0, r2									// convert to
 	ldr		r2, [r3, CPU_BASE_TIMEBASE_HIGH]			// mach_absolute_time
 	adc		r1, r1, r2									//
-#else /* ! __ARM_TIME__  || __ARM_TIME_TIMEBASE_ONLY__ */
-1:
-	ldr		r2, [r3, CPU_TIMEBASE_HIGH]					// Get the saved TBU value
-	ldr		r0, [r3, CPU_TIMEBASE_LOW]					// Get the saved TBL value
-	ldr		r1, [r3, CPU_TIMEBASE_HIGH]					// Get the saved TBU value
-	cmp		r1, r2										// Make sure TB has not rolled over
-	bne		1b
-#endif /* __ARM_TIME__ */
 	bx		lr											// return
 
+/*
+ *	uint64_t ml_get_timebase(void)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_get_timebase)
+LEXT(ml_get_timebase)
+	isb													// Required by ARMV7C.b section B8.1.2, ARMv8 section D6.1.2.
+	b	EXT(ml_get_speculative_timebase)
+
+/*
+ *	uint64_t ml_get_timebase_entropy(void)
+ */
+	.text
+	.align 2
+	.globl EXT(ml_get_timebase_entropy)
+LEXT(ml_get_timebase_entropy)
+	b	EXT(ml_get_speculative_timebase)
 
 /*
  *	uint32_t ml_get_decrementer(void)
@@ -1144,35 +1257,6 @@ LEXT(ml_get_interrupts_enabled)
  * Platform Specific Timebase & Decrementer Functions
  *
  */
-
-#if defined(ARM_BOARD_CLASS_S7002)
-	.text
-	.align 2
-	.globl EXT(fleh_fiq_s7002)
-LEXT(fleh_fiq_s7002)
-	str		r11, [r10, #PMGR_INTERVAL_TMR_CTL_OFFSET]		// Clear the decrementer interrupt
-	mvn		r13, #0
-	str		r13, [r8, CPU_DECREMENTER]
-	b		EXT(fleh_dec)
-
-	.text
-	.align 2
-	.globl EXT(s7002_get_decrementer)
-LEXT(s7002_get_decrementer)
-	ldr		ip, [r3, CPU_TBD_HARDWARE_ADDR]					// Get the hardware address
-	add		ip, ip, #PMGR_INTERVAL_TMR_OFFSET
-	ldr		r0, [ip]										// Get the Decrementer
-	bx		lr
-
-	.text
-	.align 2
-	.globl EXT(s7002_set_decrementer)
-LEXT(s7002_set_decrementer)
-	str		r0, [r3, CPU_DECREMENTER]					// Save the new dec value
-	ldr		ip, [r3, CPU_TBD_HARDWARE_ADDR]				// Get the hardware address
-	str		r0, [ip, #PMGR_INTERVAL_TMR_OFFSET]			// Store the new Decrementer
-	bx		lr
-#endif /* defined(ARM_BOARD_CLASS_S7002) */
 
 #if defined(ARM_BOARD_CLASS_T8002)
 	.text

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018 Apple Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -30,18 +30,22 @@
 
 #if !NETWORKING
 
-#define	STUB(name)							\
-	int name(void);							\
-	int name(void) 							\
-	{								\
-		panic("stub called in a config with no networking");	\
-		return (0); 						\
+#define STUB(name)                                                      \
+	int name(void);                                                 \
+	int name(void)                                                  \
+	{                                                               \
+	        panic("stub called in a config with no networking");    \
+	        return (0);                                             \
 	}
 
 STUB(bpf_attach);
 STUB(bpf_tap_in);
 STUB(bpf_tap_out);
 STUB(bpfattach);
+#if !SKYWALK
+STUB(bpf_tap_packet_in);
+STUB(bpf_tap_packet_out);
+#endif /* SKYWALK */
 STUB(ctl_deregister);
 STUB(ctl_enqueuedata);
 STUB(ctl_enqueuembuf);
@@ -258,6 +262,8 @@ STUB(mbuf_get_timestamp_requested);
 STUB(mbuf_set_timestamp_requested);
 STUB(mbuf_register_tx_compl_callback);
 STUB(mbuf_unregister_tx_compl_callback);
+STUB(mbuf_get_keepalive_flag);
+STUB(mbuf_set_keepalive_flag);
 STUB(net_init_add);
 STUB(proto_inject);
 STUB(proto_input);
@@ -326,6 +332,7 @@ STUB(ifnet_link_quality);
 STUB(ifnet_notice_master_elected);
 STUB(ifnet_notice_node_absence);
 STUB(ifnet_notice_node_presence);
+STUB(ifnet_notice_node_presence_v2);
 STUB(ifnet_poll_params);
 STUB(ifnet_purge);
 STUB(ifnet_report_issues);
@@ -351,6 +358,8 @@ STUB(ifnet_get_unsent_bytes);
 STUB(ifnet_get_buffer_status);
 STUB(ifnet_normalise_unsent_data);
 STUB(ifnet_set_low_power_mode);
+STUB(ifnet_notify_tcp_keepalive_offload_timeout);
+STUB(ifnet_interface_advisory_report);
 STUB(in6_localaddr);
 STUB(in_localaddr);
 STUB(in6addr_local);
@@ -388,6 +397,7 @@ STUB(net_del_domain);
 STUB(net_del_domain_old);
 STUB(net_del_proto);
 STUB(net_del_proto_old);
+STUB(net_domain_contains_hostname);
 STUB(pffinddomain);
 STUB(pffinddomain_old);
 STUB(pffindproto);
@@ -456,13 +466,18 @@ STUB(ipf_addv6_internal);
 STUB(sflt_register_internal);
 STUB(sock_accept_internal);
 STUB(sock_socket_internal);
+STUB(vsock_add_transport);
+STUB(vsock_remove_transport);
+STUB(vsock_reset_transport);
+STUB(vsock_put_message);
 #undef STUB
 
 /*
  * Called from vm_pageout.c. Nothing to be done when there's no networking.
  */
 void mbuf_drain(boolean_t);
-void mbuf_drain(boolean_t)
+void
+mbuf_drain(boolean_t)
 {
 	return;
 }

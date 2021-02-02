@@ -37,46 +37,32 @@
 #include <sys/systm.h>
 #include <security/mac_internal.h>
 
-static zone_t zone_label;
-
-void
-mac_labelzone_init(void)
-{
-
-	zone_label = zinit(sizeof(struct label),
-	    8192 * sizeof(struct label),
-	    sizeof(struct label), "MAC Labels");
-	zone_change(zone_label, Z_EXPAND, TRUE);
-	zone_change(zone_label, Z_EXHAUST, FALSE);
-	zone_change(zone_label, Z_CALLERACCT, FALSE);
-}
+static ZONE_DECLARE(zone_label, "MAC Labels", sizeof(struct label), ZC_ZFREE_CLEARMEM);
 
 struct label *
 mac_labelzone_alloc(int flags)
 {
+	int zflags = Z_ZERO | (flags & MAC_NOWAIT);
 	struct label *l;
 
-	if (flags & MAC_NOWAIT) 
-		l = (struct label *) zalloc_noblock(zone_label);
-	else
-		l = (struct label *) zalloc(zone_label);
-	if (l == NULL)
-		return (NULL);
-
-	bzero(l, sizeof(struct label));
-	l->l_flags = MAC_FLAG_INITIALIZED;
-	return (l);
+	static_assert(MAC_NOWAIT == Z_NOWAIT);
+	l = zalloc_flags(zone_label, zflags);
+	if (l) {
+		l->l_flags = MAC_FLAG_INITIALIZED;
+	}
+	return l;
 }
 
 void
 mac_labelzone_free(struct label *l)
 {
-
-	if (l == NULL)
+	if (l == NULL) {
 		panic("Free of NULL MAC label\n");
+	}
 
-	if ((l->l_flags & MAC_FLAG_INITIALIZED) == 0)
+	if ((l->l_flags & MAC_FLAG_INITIALIZED) == 0) {
 		panic("Free of uninitialized label\n");
+	}
 	bzero(l, sizeof(struct label));
 	zfree(zone_label, l);
 }
@@ -89,7 +75,7 @@ mac_label_get(struct label *l, int slot)
 {
 	KASSERT(l != NULL, ("mac_label_get: NULL label"));
 
-	return ((intptr_t) (l->l_perpolicy[slot].l_ptr));
+	return (intptr_t) (l->l_perpolicy[slot].l_ptr);
 }
 
 void
@@ -99,4 +85,3 @@ mac_label_set(struct label *l, int slot, intptr_t v)
 
 	l->l_perpolicy[slot].l_ptr = (void *) v;
 }
-

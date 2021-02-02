@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2002-2020 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  * 
@@ -106,6 +106,15 @@ enum {
 #define kIOPMMessageLaunchBootSpinDump \
                 iokit_family_msg(sub_iokit_powermanagement, 0x440)
 
+#define kIOPMMessageProModeStateChange \
+                iokit_family_msg(sub_iokit_powermanagement, 0x450)
+
+#define kIOPMMessageRequestUserActive \
+                iokit_family_msg(sub_iokit_powermanagement, 0x460)
+
+#define kIOPMMessageRequestSystemShutdown \
+                iokit_family_msg(sub_iokit_powermanagement, 0x470)
+
 /* @enum SystemSleepReasons
  * @abstract The potential causes for system sleep as logged in the system event record.
  */
@@ -119,7 +128,8 @@ enum {
     kIOPMSleepReasonThermalEmergency            = 107,
     kIOPMSleepReasonMaintenance                 = 108,
     kIOPMSleepReasonSleepServiceExit            = 109,
-    kIOPMSleepReasonDarkWakeThermalEmergency    = 110
+    kIOPMSleepReasonDarkWakeThermalEmergency    = 110,
+    kIOPMSleepReasonNotificationWakeExit        = 111
 };
 
 /*
@@ -134,6 +144,7 @@ enum {
 #define kIOPMThermalEmergencySleepKey               "Thermal Emergency Sleep"
 #define kIOPMSleepServiceExitKey                    "Sleep Service Back to Sleep"
 #define kIOPMDarkWakeThermalEmergencyKey            "Dark Wake Thermal Emergency"
+#define kIOPMNotificationWakeExitKey                "Notification Wake Back to Sleep"
 
 /*! kIOPMPSRestrictedModeKey
  *  An IOPMPowerSource property key
@@ -143,6 +154,9 @@ enum {
  *      not in a restricted mode power state.
 */
 #define kIOPMPSRestrictedModeKey                    "RestrictedMode"
+
+// Private keys for kIOPMPSAdapterDetailsKey dictionary
+#define kIOPMPSAdapterDetailsIsWirelessKey          "IsWireless"
 
 #pragma mark Stray Bitfields
 // Private power commands issued to root domain
@@ -183,6 +197,7 @@ enum {
  * These are valid values for IOPM.h:IOPMCalendarStruct->selector
  */
 enum {
+    kPMCalendarTypeInvalid = 0,
     kPMCalendarTypeMaintenance = 1,
     kPMCalendarTypeSleepService = 2
 };
@@ -242,6 +257,13 @@ enum {
     kIOPMSilentRunningModeOn = 0x00000001
 };
 
+/* @constant kIOPMSettingLowLatencyAudioModeKey
+ * @abstract Notification about low latency activity in the system available to kexts.
+ * @discussion This type can be passed as arguments to registerPMSettingController()
+ * to receive callbacks.
+ */
+#define kIOPMSettingLowLatencyAudioModeKey          "LowLatencyAudioMode"
+
 /*****************************************************************************/
 /*****************************************************************************/
 
@@ -269,6 +291,8 @@ enum {
 #define kIOPMSleepStatisticsAppsKey             "AppStatistics"
 #define kIOPMIdleSleepPreventersKey             "IdleSleepPreventers"
 #define kIOPMSystemSleepPreventersKey           "SystemSleepPreventers"
+#define kIOPMIdleSleepPreventersWithIDKey       "IdleSleepPreventersWithID"
+#define kIOPMSystemSleepPreventersWithIDKey     "SystemSleepPreventersWithID"
 
 // Application response statistics
 #define kIOPMStatsNameKey                       "Name"
@@ -674,6 +698,11 @@ enum {
 #define kIOPMWakeEventReasonKey             "Reason"
 #define kIOPMWakeEventDetailsKey            "Details"
 
+/* kIOPMFeatureProModeKey
+ * Feature published if ProMode is supported
+ */
+#define kIOPMFeatureProModeKey              "ProMode"
+
 /*****************************************************************************
  *
  * Wake event flags reported to IOPMrootDomain::claimSystemWakeEvent()
@@ -681,6 +710,94 @@ enum {
  *****************************************************************************/
 
 #define kIOPMWakeEventSource                0x00000001
+
+/*****************************************************************************
+ *
+ * AOT defs
+ *
+ *****************************************************************************/
+
+// signals the device should wake up to user space running
+#define kIOPMWakeEventAOTExit                   0x00000002
+
+// will start a 400 ms timer before sleeping
+#define kIOPMWakeEventAOTPossibleExit           0x00000004
+
+// signals the device should wake up to user space running
+#define kIOPMWakeEventAOTConfirmedPossibleExit  0x00000008
+
+// signals the device should go back to AOT
+#define kIOPMWakeEventAOTRejectedPossibleExit   0x00000010
+
+// signals the device should go back to AOT
+#define kIOPMWakeEventAOTExpiredPossibleExit    0x00000020
+
+#define kIOPMWakeEventAOTFlags \
+                                 (kIOPMWakeEventAOTExit \
+                                | kIOPMWakeEventAOTPossibleExit \
+                                | kIOPMWakeEventAOTConfirmedPossibleExit \
+                                | kIOPMWakeEventAOTRejectedPossibleExit \
+                                | kIOPMWakeEventAOTExpiredPossibleExit)
+
+#define kIOPMWakeEventAOTPossibleFlags \
+                                 (kIOPMWakeEventAOTPossibleExit \
+                                | kIOPMWakeEventAOTConfirmedPossibleExit \
+                                | kIOPMWakeEventAOTRejectedPossibleExit \
+                                | kIOPMWakeEventAOTExpiredPossibleExit)
+
+#define kIOPMWakeEventAOTPerCycleFlags \
+                                 (kIOPMWakeEventAOTPossibleExit \
+                                | kIOPMWakeEventAOTRejectedPossibleExit \
+                                | kIOPMWakeEventAOTExpiredPossibleExit)
+
+#define kIOPMWakeEventAOTExitFlags \
+                                 (kIOPMWakeEventAOTExit \
+                                | kIOPMWakeEventAOTConfirmedPossibleExit)
+
+enum {
+	kIOPMAOTModeMask          = 0x000000ff,
+    kIOPMAOTModeEnable        = 0x00000001,
+    kIOPMAOTModeCycle         = 0x00000002,
+    kIOPMAOTModeAddEventFlags = 0x00000004,
+    kIOPMAOTModeRespectTimers = 0x00000008,
+    kIOPMAOTModeDefault       = (kIOPMAOTModeEnable | kIOPMAOTModeAddEventFlags | kIOPMAOTModeRespectTimers)
+};
+
+enum {
+    kIOPMAOTMetricsKernelWakeCountMax = 24
+};
+
+struct IOPMAOTMetrics
+{
+    uint32_t sleepCount;
+    uint32_t possibleCount;
+    uint32_t confirmedPossibleCount;
+    uint32_t rejectedPossibleCount;
+    uint32_t expiredPossibleCount;
+    uint32_t noTimeSetCount;
+    uint32_t rtcAlarmsCount;
+    uint32_t softwareRequestCount;
+    uint64_t totalTime;
+
+	char     kernelWakeReason[kIOPMAOTMetricsKernelWakeCountMax][64];
+	// 54:10 secs:ms calendar time
+    uint64_t kernelSleepTime[kIOPMAOTMetricsKernelWakeCountMax];
+    uint64_t kernelWakeTime[kIOPMAOTMetricsKernelWakeCountMax];
+};
+
+#define kIOPMAOTPowerKey    "aot-power"
+
+/*****************************************************************************
+ *
+ * Dark Wake
+ *
+ *****************************************************************************/
+
+/* An OSNumber property set on a power managed driver that the root domain
+ * will use as the driver's max power state while system is in dark wake.
+ * This property should be set prior to the driver joining the PM tree.
+ */
+#define kIOPMDarkWakeMaxPowerStateKey       "IOPMDarkWakeMaxPowerState"
 
 /*****************************************************************************
  *
@@ -873,6 +990,7 @@ typedef struct {
 #define SWD_VALID_LOGS          0x08
 #define SWD_LOGS_IN_FILE        0x10
 #define SWD_LOGS_IN_MEM         0x20
+#define SWD_PWR_BTN_STACKSHOT   0x30
 
 #define SWD_DATA_CRC_ERROR      0x010000
 #define SWD_BUF_SIZE_ERROR      0x020000

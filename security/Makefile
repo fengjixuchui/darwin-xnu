@@ -6,7 +6,7 @@ export MakeInc_dir=${SRCROOT}/makedefs/MakeInc.dir
 include $(MakeInc_cmd)
 include $(MakeInc_def)
 
-INCDIR=/usr/local/include
+INCDIR=$(SDKHEADERSROOT)/usr/local/include
 
 # Installs header file for user level -
 #         $(DSTROOT)/System/Library/Frameworks/System.framework/PrivateHeaders
@@ -28,7 +28,6 @@ PRIVATE_DATAFILES = ${DATAFILES}
 PRIVATE_KERNELFILES = \
 	_label.h \
 	mac.h \
-	mac_alloc.h \
 	mac_data.h \
 	mac_framework.h \
 	mac_internal.h \

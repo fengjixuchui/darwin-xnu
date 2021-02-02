@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2016 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_APACHE_LICENSE_HEADER_START@
  *
@@ -22,6 +22,7 @@
 #define __OS_BASE__
 
 #include <sys/cdefs.h>
+
 
 #ifndef __has_builtin
 #define __has_builtin(x) 0
@@ -73,7 +74,7 @@
 #define OS_ALWAYS_INLINE __attribute__((__always_inline__))
 #define OS_TRANSPARENT_UNION __attribute__((__transparent_union__))
 #define OS_ALIGNED(n) __attribute__((__aligned__((n))))
-#define OS_FORMAT_PRINTF(x,y) __attribute__((__format__(printf,x,y)))
+#define OS_FORMAT_PRINTF(x, y) __attribute__((__format__(printf,x,y)))
 #define OS_EXPORT extern __attribute__((__visibility__("default")))
 #define OS_INLINE static __inline__
 #define OS_EXPECT(x, v) __builtin_expect((x), (v))
@@ -110,7 +111,7 @@
 #define OS_ALWAYS_INLINE
 #define OS_TRANSPARENT_UNION
 #define OS_ALIGNED(n)
-#define OS_FORMAT_PRINTF(x,y)
+#define OS_FORMAT_PRINTF(x, y)
 #define OS_EXPORT extern
 #define OS_INLINE static inline
 #define OS_EXPECT(x, v) (x)
@@ -120,6 +121,14 @@
 #define OS_NOESCAPE __attribute__((__noescape__))
 #else
 #define OS_NOESCAPE
+#endif
+
+#if defined(__cplusplus) && defined(__clang__)
+#define OS_FALLTHROUGH [[clang::fallthrough]]
+#elif __has_attribute(fallthrough)
+#define OS_FALLTHROUGH __attribute__((__fallthrough__))
+#else
+#define OS_FALLTHROUGH
 #endif
 
 #if __has_feature(assume_nonnull)
@@ -142,18 +151,88 @@
 #define OS_OVERLOADABLE
 #endif
 
-#if __has_feature(objc_fixed_enum) || __has_extension(cxx_strong_enums)
-#define OS_ENUM(_name, _type, ...) \
-		typedef enum : _type { __VA_ARGS__ } _name##_t
+#if __has_attribute(enum_extensibility)
+#define __OS_ENUM_ATTR __attribute__((enum_extensibility(open)))
+#define __OS_ENUM_ATTR_CLOSED __attribute__((enum_extensibility(closed)))
 #else
+#define __OS_ENUM_ATTR
+#define __OS_ENUM_ATTR_CLOSED
+#endif // __has_attribute(enum_extensibility)
+
+#if __has_attribute(flag_enum)
+/*!
+ * Compile with -Wflag-enum and -Wassign-enum to enforce at definition and
+ * assignment, respectively, i.e. -Wflag-enum prevents you from creating new
+ * enumeration values from illegal values within the enum definition, and
+ * -Wassign-enum prevents you from assigning illegal values to a variable of the
+ * enum type.
+ */
+#define __OS_OPTIONS_ATTR __attribute__((flag_enum))
+#else
+#define __OS_OPTIONS_ATTR
+#endif // __has_attribute(flag_enum)
+
+#if __has_feature(objc_fixed_enum) || __has_extension(cxx_fixed_enum) || \
+        __has_extension(cxx_strong_enums)
 #define OS_ENUM(_name, _type, ...) \
-		enum { __VA_ARGS__ }; typedef _type _name##_t
-#endif
+	typedef enum : _type { __VA_ARGS__ } _name##_t
+#define OS_CLOSED_ENUM(_name, _type, ...) \
+	typedef enum : _type { __VA_ARGS__ } __OS_ENUM_ATTR_CLOSED _name##_t
+#define OS_OPTIONS(_name, _type, ...) \
+	typedef enum : _type { __VA_ARGS__ } __OS_ENUM_ATTR __OS_OPTIONS_ATTR _name##_t
+#define OS_CLOSED_OPTIONS(_name, _type, ...) \
+	typedef enum : _type { __VA_ARGS__ } __OS_ENUM_ATTR_CLOSED __OS_OPTIONS_ATTR _name##_t
+#else
+/*!
+ * There is unfortunately no good way in plain C to have both fixed-type enums
+ * and enforcement for clang's enum_extensibility extensions. The primary goal
+ * of these macros is to allow you to define an enum and specify its width in a
+ * single statement, and for plain C that is accomplished by defining an
+ * anonymous enum and then separately typedef'ing the requested type name to the
+ * requested underlying integer type. So the type emitted actually has no
+ * relationship at all to the enum, and therefore while the compiler could
+ * enforce enum extensibility if you used the enum type, it cannot do so if you
+ * use the "_t" type resulting from this expression.
+ *
+ * But we still define a named enum type and decorate it appropriately for you,
+ * so if you really want the enum extensibility enforcement, you can use the
+ * enum type yourself, i.e. when compiling with a C compiler:
+ *
+ *     OS_CLOSED_ENUM(my_type, uint64_t,
+ *         FOO,
+ *         BAR,
+ *         BAZ,
+ *     );
+ *
+ *     my_type_t mt = 98; // legal
+ *     enum my_type emt = 98; // illegal
+ *
+ * But be aware that the underlying enum type's width is subject only to the C
+ * language's guarantees -- namely that it will be compatible with int, char,
+ * and unsigned char. It is not safe to rely on the size of this type.
+ *
+ * When compiling in ObjC or C++, both of the above assignments are illegal.
+ */
+#define __OS_ENUM_C_FALLBACK(_name, _type, ...) \
+	typedef _type _name##_t; enum _name { __VA_ARGS__ }
+
+#define OS_ENUM(_name, _type, ...) \
+	typedef _type _name##_t; enum { __VA_ARGS__ }
+#define OS_CLOSED_ENUM(_name, _type, ...) \
+	__OS_ENUM_C_FALLBACK(_name, _type, ## __VA_ARGS__) \
+	__OS_ENUM_ATTR_CLOSED
+#define OS_OPTIONS(_name, _type, ...) \
+	__OS_ENUM_C_FALLBACK(_name, _type, ## __VA_ARGS__) \
+	__OS_ENUM_ATTR __OS_OPTIONS_ATTR
+#define OS_CLOSED_OPTIONS(_name, _type, ...) \
+	__OS_ENUM_C_FALLBACK(_name, _type, ## __VA_ARGS__) \
+	__OS_ENUM_ATTR_CLOSED __OS_OPTIONS_ATTR
+#endif // __has_feature(objc_fixed_enum) || __has_extension(cxx_strong_enums)
 
 #if __has_feature(attribute_availability_swift)
 // equivalent to __SWIFT_UNAVAILABLE from Availability.h
 #define OS_SWIFT_UNAVAILABLE(_msg) \
-		__attribute__((__availability__(swift, unavailable, message=_msg)))
+	__attribute__((__availability__(swift, unavailable, message=_msg)))
 #else
 #define OS_SWIFT_UNAVAILABLE(_msg)
 #endif
@@ -177,18 +256,32 @@
 
 #ifdef __GNUC__
 #define os_prevent_tail_call_optimization()  __asm__("")
-#define os_is_compile_time_constant(expr)  __builtin_constant_p(expr)
-#define os_compiler_barrier()  __asm__ __volatile__("" ::: "memory")
+#define os_is_compile_time_constant(expr)    __builtin_constant_p(expr)
+#define os_compiler_barrier()                __asm__ __volatile__("" ::: "memory")
 #else
 #define os_prevent_tail_call_optimization()  do { } while (0)
-#define os_is_compile_time_constant(expr)  0
-#define os_compiler_barrier()  do { } while (0)
+#define os_is_compile_time_constant(expr)    0
+#define os_compiler_barrier()                do { } while (0)
 #endif
 
 #if __has_attribute(not_tail_called)
 #define OS_NOT_TAIL_CALLED __attribute__((__not_tail_called__))
 #else
 #define OS_NOT_TAIL_CALLED
+#endif
+
+#if KERNEL
+/*
+ * LIBKERN_ALWAYS_DESTROY attribute can be applied to global variables with
+ * destructors. It specifies that and object should have its exit-time
+ * destructor run. This attribute is the default unless clang was invoked with
+ * -fno-c++-static-destructors.
+ */
+#if __has_attribute(always_destroy)
+#define LIBKERN_ALWAYS_DESTROY __attribute__((__always_destroy__))
+#else
+#define LIBKERN_ALWAYS_DESTROY
+#endif
 #endif
 
 typedef void (*os_function_t)(void *_Nullable);
@@ -236,5 +329,22 @@ typedef void (*os_function_t)(void *_Nullable);
  */
 typedef void (^os_block_t)(void);
 #endif
+
+#if KERNEL
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#define OS_PTRAUTH_SIGNED_PTR(type) __ptrauth(ptrauth_key_process_independent_data, 1, ptrauth_string_discriminator(type))
+#define OS_PTRAUTH_DISCRIMINATOR(str) ptrauth_string_discriminator(str)
+#define __ptrauth_only
+#else //  __has_feature(ptrauth_calls)
+#define OS_PTRAUTH_SIGNED_PTR(type)
+#define OS_PTRAUTH_DISCRIMINATOR(str) 0
+#define __ptrauth_only __unused
+#endif // __has_feature(ptrauth_calls)
+#endif // KERNEL
+
+#if KERNEL_PRIVATE
+#define XNU_PTRAUTH_SIGNED_PTR OS_PTRAUTH_SIGNED_PTR
+#endif // KERNEL_PRIVATE
 
 #endif // __OS_BASE__

@@ -42,36 +42,34 @@
 
 typedef struct {
 	uint32_t
-
-	Ctype1:3,	/* 2:0 */
-	Ctype2:3,	/* 5:3 */
-	Ctype3:3,	/* 8:6 */
-	Ctypes:15,	/* 6:23 - Don't Care */
-	LoC:3,		/* 26-24 - Level of Coherency */
-	LoU:3,		/* 29:27 - Level of Unification */
-	RAZ:2;		/* 31:30 - Read-As-Zero */
-}               arm_cache_clidr_t;
+	    Ctype1:3, /* 2:0 */
+	    Ctype2:3, /* 5:3 */
+	    Ctype3:3, /* 8:6 */
+	    Ctypes:15, /* 6:23 - Don't Care */
+	    LoC:3, /* 26-24 - Level of Coherency */
+	    LoU:3, /* 29:27 - Level of Unification */
+	    RAZ:2; /* 31:30 - Read-As-Zero */
+} arm_cache_clidr_t;
 
 typedef union {
 	arm_cache_clidr_t bits;
-	uint32_t        value;
-}               arm_cache_clidr_info_t;
+	uint32_t          value;
+} arm_cache_clidr_info_t;
 
 
 typedef struct {
 	uint32_t
-
-	LineSize:3,	/* 2:0 - Number of words in cache line */
-	Assoc:10,	/* 12:3 - Associativity of cache */
-	NumSets:15,	/* 27:13 - Number of sets in cache */
-	c_type:4;	/* 31:28 - Cache type */
-}               arm_cache_ccsidr_t;
+	    LineSize:3, /* 2:0 - Number of words in cache line */
+	    Assoc:10, /* 12:3 - Associativity of cache */
+	    NumSets:15, /* 27:13 - Number of sets in cache */
+	    c_type:4; /* 31:28 - Cache type */
+} arm_cache_ccsidr_t;
 
 
 typedef union {
 	arm_cache_ccsidr_t bits;
-	uint32_t        value;
-}               arm_cache_ccsidr_info_t;
+	uint32_t           value;
+} arm_cache_ccsidr_info_t;
 
 /* Statics */
 
@@ -85,17 +83,21 @@ void
 do_cpuid(void)
 {
 	cpuid_cpu_info.value = machine_read_midr();
-#if		(__ARM_ARCH__ == 8)
+#if (__ARM_ARCH__ == 8)
 
+#if defined(HAS_APPLE_PAC)
+	cpuid_cpu_info.arm_info.arm_arch = CPU_ARCH_ARMv8E;
+#else /* defined(HAS_APPLE_PAC) */
 	cpuid_cpu_info.arm_info.arm_arch = CPU_ARCH_ARMv8;
+#endif /* defined(HAS_APPLE_PAC) */
 
-#elif	(__ARM_ARCH__ == 7)
-  #ifdef __ARM_SUB_ARCH__
+#elif (__ARM_ARCH__ == 7)
+#ifdef __ARM_SUB_ARCH__
 	cpuid_cpu_info.arm_info.arm_arch = __ARM_SUB_ARCH__;
-  #else
+#else /* __ARM_SUB_ARCH__ */
 	cpuid_cpu_info.arm_info.arm_arch = CPU_ARCH_ARMv7;
-  #endif
-#else
+#endif /* __ARM_SUB_ARCH__ */
+#else /* (__ARM_ARCH__ != 7) && (__ARM_ARCH__ != 8) */
 	/* 1176 architecture lives in the extended feature register */
 	if (cpuid_cpu_info.arm_info.arm_arch == CPU_ARCH_EXTENDED) {
 		arm_isa_feat1_reg isa = machine_read_isa_feat1();
@@ -108,7 +110,7 @@ do_cpuid(void)
 			cpuid_cpu_info.arm_info.arm_arch = CPU_ARCH_ARMv6;
 		}
 	}
-#endif
+#endif /* (__ARM_ARCH__ != 7) && (__ARM_ARCH__ != 8) */
 }
 
 arm_cpu_info_t *
@@ -154,12 +156,6 @@ cpuid_get_cpufamily(void)
 
 	case CPU_VID_APPLE:
 		switch (cpuid_info()->arm_info.arm_part) {
-		case CPU_PART_SWIFT:
-			cpufamily = CPUFAMILY_ARM_SWIFT;
-			break;
-		case CPU_PART_CYCLONE:
-			cpufamily = CPUFAMILY_ARM_CYCLONE;
-			break;
 		case CPU_PART_TYPHOON:
 		case CPU_PART_TYPHOON_CAPRI:
 			cpufamily = CPUFAMILY_ARM_TYPHOON;
@@ -176,6 +172,28 @@ cpuid_get_cpufamily(void)
 		case CPU_PART_MISTRAL:
 			cpufamily = CPUFAMILY_ARM_MONSOON_MISTRAL;
 			break;
+		case CPU_PART_VORTEX:
+		case CPU_PART_TEMPEST:
+		case CPU_PART_TEMPEST_M9:
+		case CPU_PART_VORTEX_ARUBA:
+		case CPU_PART_TEMPEST_ARUBA:
+			cpufamily = CPUFAMILY_ARM_VORTEX_TEMPEST;
+			break;
+		case CPU_PART_LIGHTNING:
+		case CPU_PART_THUNDER:
+#ifndef RC_HIDE_XNU_FIRESTORM
+		case CPU_PART_THUNDER_M10:
+#endif
+			cpufamily = CPUFAMILY_ARM_LIGHTNING_THUNDER;
+			break;
+#ifndef RC_HIDE_XNU_FIRESTORM
+		case CPU_PART_FIRESTORM:
+		case CPU_PART_ICESTORM:
+		case CPU_PART_FIRESTORM_TONGA:
+		case CPU_PART_ICESTORM_TONGA:
+			cpufamily = CPUFAMILY_ARM_FIRESTORM_ICESTORM;
+			break;
+#endif
 		default:
 			cpufamily = CPUFAMILY_UNKNOWN;
 			break;
@@ -188,6 +206,56 @@ cpuid_get_cpufamily(void)
 	}
 
 	return cpufamily;
+}
+
+int
+cpuid_get_cpusubfamily(void)
+{
+	int cpusubfamily = CPUSUBFAMILY_UNKNOWN;
+
+	if (cpuid_info()->arm_info.arm_implementor != CPU_VID_APPLE) {
+		return cpusubfamily;
+	}
+
+	switch (cpuid_info()->arm_info.arm_part) {
+	case CPU_PART_TYPHOON:
+	case CPU_PART_TWISTER:
+	case CPU_PART_HURRICANE:
+	case CPU_PART_MONSOON:
+	case CPU_PART_MISTRAL:
+	case CPU_PART_VORTEX:
+	case CPU_PART_TEMPEST:
+	case CPU_PART_LIGHTNING:
+	case CPU_PART_THUNDER:
+#ifndef RC_HIDE_XNU_FIRESTORM
+	case CPU_PART_FIRESTORM:
+	case CPU_PART_ICESTORM:
+#endif
+		cpusubfamily = CPUSUBFAMILY_ARM_HP;
+		break;
+	case CPU_PART_TYPHOON_CAPRI:
+	case CPU_PART_TWISTER_ELBA_MALTA:
+	case CPU_PART_HURRICANE_MYST:
+	case CPU_PART_VORTEX_ARUBA:
+	case CPU_PART_TEMPEST_ARUBA:
+#ifndef RC_HIDE_XNU_FIRESTORM
+	case CPU_PART_FIRESTORM_TONGA:
+	case CPU_PART_ICESTORM_TONGA:
+#endif
+		cpusubfamily = CPUSUBFAMILY_ARM_HG;
+		break;
+	case CPU_PART_TEMPEST_M9:
+#ifndef RC_HIDE_XNU_FIRESTORM
+	case CPU_PART_THUNDER_M10:
+#endif
+		cpusubfamily = CPUSUBFAMILY_ARM_M;
+		break;
+	default:
+		cpusubfamily = CPUFAMILY_UNKNOWN;
+		break;
+	}
+
+	return cpusubfamily;
 }
 
 void
@@ -209,7 +277,8 @@ do_mvfpid(void)
 }
 
 arm_mvfp_info_t
-*arm_mvfp_info(void)
+*
+arm_mvfp_info(void)
 {
 	return machine_arm_mvfp_info();
 }
@@ -247,7 +316,7 @@ do_cacheid(void)
 		cpuid_cache_info.c_type = CACHE_UNKNOWN;
 	}
 
-	cpuid_cache_info.c_linesz = 4 * (1<<(arm_cache_ccsidr_info.bits.LineSize + 2));
+	cpuid_cache_info.c_linesz = 4 * (1 << (arm_cache_ccsidr_info.bits.LineSize + 2));
 	cpuid_cache_info.c_assoc = (arm_cache_ccsidr_info.bits.Assoc + 1);
 
 	/* I cache size */
@@ -259,7 +328,6 @@ do_cacheid(void)
 
 	if ((arm_cache_clidr_info.bits.Ctype3 == 0x4) ||
 	    (arm_cache_clidr_info.bits.Ctype2 == 0x4) || (arm_cache_clidr_info.bits.Ctype2 == 0x2)) {
-
 		if (arm_cache_clidr_info.bits.Ctype3 == 0x4) {
 			/* Select L3 (LLC) if the SoC is new enough to have that.
 			 * This will be the second-level cache for the highest-performing ACC. */
@@ -270,7 +338,7 @@ do_cacheid(void)
 		}
 		arm_cache_ccsidr_info.value = machine_read_ccsidr();
 
-		cpuid_cache_info.c_linesz = 4 * (1<<(arm_cache_ccsidr_info.bits.LineSize + 2));
+		cpuid_cache_info.c_linesz = 4 * (1 << (arm_cache_ccsidr_info.bits.LineSize + 2));
 		cpuid_cache_info.c_assoc = (arm_cache_ccsidr_info.bits.Assoc + 1);
 		cpuid_cache_info.c_l2size = (arm_cache_ccsidr_info.bits.NumSets + 1) * cpuid_cache_info.c_linesz * cpuid_cache_info.c_assoc;
 		cpuid_cache_info.c_inner_cache_size = cpuid_cache_info.c_dsize;
@@ -299,16 +367,25 @@ do_cacheid(void)
 		cpuid_cache_info.c_bulksize_op = cpuid_cache_info.c_dsize;
 	}
 
+	if (cpuid_cache_info.c_unified == 0) {
+		machine_write_csselr(CSSELR_L1, CSSELR_INSTR);
+		arm_cache_ccsidr_info.value = machine_read_ccsidr();
+		uint32_t c_linesz = 4 * (1 << (arm_cache_ccsidr_info.bits.LineSize + 2));
+		uint32_t c_assoc = (arm_cache_ccsidr_info.bits.Assoc + 1);
+		/* I cache size */
+		cpuid_cache_info.c_isize = (arm_cache_ccsidr_info.bits.NumSets + 1) * c_linesz * c_assoc;
+	}
+
 	kprintf("%s() - %u bytes %s cache (I:%u D:%u (%s)), %u-way assoc, %u bytes/line\n",
-		__FUNCTION__,
-		cpuid_cache_info.c_dsize + cpuid_cache_info.c_isize,
-		((cpuid_cache_info.c_type == CACHE_WRITE_BACK) ? "WB" :
-	(cpuid_cache_info.c_type == CACHE_WRITE_THROUGH ? "WT" : "Unknown")),
-		cpuid_cache_info.c_isize,
-		cpuid_cache_info.c_dsize,
-		(cpuid_cache_info.c_unified) ? "unified" : "separate",
-		cpuid_cache_info.c_assoc,
-		cpuid_cache_info.c_linesz);
+	    __FUNCTION__,
+	    cpuid_cache_info.c_dsize + cpuid_cache_info.c_isize,
+	    ((cpuid_cache_info.c_type == CACHE_WRITE_BACK) ? "WB" :
+	    (cpuid_cache_info.c_type == CACHE_WRITE_THROUGH ? "WT" : "Unknown")),
+	    cpuid_cache_info.c_isize,
+	    cpuid_cache_info.c_dsize,
+	    (cpuid_cache_info.c_unified) ? "unified" : "separate",
+	    cpuid_cache_info.c_assoc,
+	    cpuid_cache_info.c_linesz);
 }
 
 cache_info_t   *

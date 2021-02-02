@@ -36,6 +36,8 @@ COMP_SUBDIRS =
 
 %OBJS
 
+%LIBOBJS
+
 %CFILES
 
 %CXXFILES
@@ -46,19 +48,6 @@ COMP_SUBDIRS =
 
 # Rebuild if per-file overrides change
 ${OBJS}: $(firstword $(MAKEFILE_LIST))
-
-# set file list manually
-OBJS =
-
-ifeq ($(KASAN),1)
-OBJS += kasan.o kasan-fakestack.o kasan-memintrinsics.o kasan_dynamic_blacklist.o
-OBJS += kasan-$(CURRENT_ARCH_CONFIG_LC).o
-OBJS += kasan-test.o kasan-test-$(CURRENT_ARCH_CONFIG_LC).o
-endif
-
-ifeq ($(UBSAN),1)
-OBJS += ubsan.o ubsan_log.o
-endif
 
 # Rebuild if global compile flags change
 $(COBJS): .CFLAGS
@@ -76,18 +65,28 @@ $(SOBJS): .SFLAGS
 	$(_v)$(REPLACECONTENTS) $@ $(KASAN)
 
 $(COMPONENT).filelist: $(OBJS) .KASANFLAGS
-	@echo "$(ColorL)LDFILELIST$(Color0) $(ColorLF)$(COMPONENT)$(Color0)"
+	@$(LOG_LDFILELIST) "$(COMPONENT)"
 	$(_v)for obj in ${OBJS}; do	\
-		 echo $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
+		 $(ECHO) $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
 	done > $(COMPONENT).filelist
 
+$(COMPONENT).libfilelist: $(LIBOBJS)
+	@$(LOG_LDFILELIST) "lib$(COMPONENT)"
+	$(_v)for obj in ${LIBOBJS}; do	\
+		 $(ECHO) $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
+	done > $(COMPONENT).libfilelist
+
 $(TARGET)/$(CURRENT_KERNEL_CONFIG)/kasan_blacklist_dynamic.h: $(SRCROOT)/$(COMPONENT)/kasan-blacklist-dynamic
-	@echo "$(ColorH)GENERATING$(Color0)    $(ColorLF)$(notdir $@)$(Color0)"
+	@$(LOG_GENERATE) "$(notdir $@)"
 	@$(SRCROOT)/$(COMPONENT)/tools/generate_dynamic_blacklist.py "$<" > "$@"
 
 $(SRCROOT)/$(COMPONENT)/kasan_dynamic_blacklist.c: $(TARGET)/$(CURRENT_KERNEL_CONFIG)/kasan_blacklist_dynamic.h
 
+ifeq ($(RC_ProjectName),xnu_libraries)
+do_all: $(COMPONENT).libfilelist
+else
 do_all: $(COMPONENT).filelist
+endif
 
 do_build_all:: do_all
 

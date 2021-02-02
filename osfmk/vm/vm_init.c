@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2000-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2000-2020 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
@@ -11,10 +11,10 @@
  * unlawful or unlicensed copies of an Apple operating system, or to
  * circumvent, violate, or enable the circumvention or violation of, any
  * terms of an Apple operating system software license agreement.
- * 
+ *
  * Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -22,34 +22,34 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
 /*
  * @OSF_COPYRIGHT@
  */
-/* 
+/*
  * Mach Operating System
  * Copyright (c) 1991,1990,1989,1988,1987 Carnegie Mellon University
  * All Rights Reserved.
- * 
+ *
  * Permission to use, copy, modify and distribute this software and its
  * documentation is hereby granted, provided that both the copyright
  * notice and this permission notice appear in all copies of the
  * software, derivative works or modified versions, and any portions
  * thereof, and that both notices appear in supporting documentation.
- * 
+ *
  * CARNEGIE MELLON ALLOWS FREE USE OF THIS SOFTWARE IN ITS "AS IS"
  * CONDITION.  CARNEGIE MELLON DISCLAIMS ANY LIABILITY OF ANY KIND FOR
  * ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
- * 
+ *
  * Carnegie Mellon requests users of this software to return to
- * 
+ *
  *  Software Distribution Coordinator  or  Software.Distribution@CS.CMU.EDU
  *  School of Computer Science
  *  Carnegie Mellon University
  *  Pittsburgh PA 15213-3890
- * 
+ *
  * any improvements or extensions that they make and grant Carnegie Mellon
  * the rights to redistribute these changes.
  */
@@ -65,8 +65,8 @@
 
 #include <mach/machine/vm_types.h>
 #include <mach/vm_map.h>
-#include <kern/zalloc.h>
-#include <kern/kalloc.h>
+#include <kern/startup.h>
+#include <kern/zalloc_internal.h>
 #include <kern/kext_alloc.h>
 #include <sys/kdebug.h>
 #include <vm/vm_object.h>
@@ -81,25 +81,14 @@
 
 #include <vm/vm_protos.h>
 
-#define ZONE_MAP_MIN CONFIG_ZONE_MAP_MIN
-
-/* Maximum zone size is 1.5G */
-#define ZONE_MAP_MAX (1024 * 1024 * 1536) 
-
 const vm_offset_t vm_min_kernel_address = VM_MIN_KERNEL_AND_KEXT_ADDRESS;
 const vm_offset_t vm_max_kernel_address = VM_MAX_KERNEL_ADDRESS;
 
-boolean_t vm_kernel_ready = FALSE;
-boolean_t kmem_ready = FALSE;
-boolean_t kmem_alloc_ready = FALSE;
-boolean_t zlog_ready = FALSE;
+TUNABLE(bool, iokit_iomd_setownership_enabled,
+    "iokit_iomd_setownership_enabled", true);
 
 vm_offset_t kmapoff_kaddr;
 unsigned int kmapoff_pgcnt;
-
-#if CONFIG_EMBEDDED
-extern int log_executable_mem_entry;
-#endif /* CONFIG_EMBEDDED */
 
 static inline void
 vm_mem_bootstrap_log(const char *message)
@@ -112,13 +101,11 @@ vm_mem_bootstrap_log(const char *message)
  *	vm_mem_bootstrap initializes the virtual memory system.
  *	This is done only by the first cpu up.
  */
-
+__startup_func
 void
 vm_mem_bootstrap(void)
 {
-	vm_offset_t	start, end;
-	vm_size_t zsizearg;
-	mach_vm_size_t zsize;
+	vm_offset_t     start, end;
 
 	/*
 	 *	Initializes resident memory structures.
@@ -138,101 +125,51 @@ vm_mem_bootstrap(void)
 	vm_mem_bootstrap_log("vm_object_bootstrap");
 	vm_object_bootstrap();
 
-	vm_kernel_ready = TRUE;
+	kernel_startup_initialize_upto(STARTUP_SUB_VM_KERNEL);
 
 	vm_mem_bootstrap_log("vm_map_init");
 	vm_map_init();
 
 	vm_mem_bootstrap_log("kmem_init");
 	kmem_init(start, end);
-	kmem_ready = TRUE;
+
+	kernel_startup_initialize_upto(STARTUP_SUB_KMEM);
+
 	/*
 	 * Eat a random amount of kernel_map to fuzz subsequent heap, zone and
 	 * stack addresses. (With a 4K page and 9 bits of randomness, this
-	 * eats at most 2M of VA from the map.)
+	 * eats about 2M of VA from the map)
+	 *
+	 * Note that we always need to slide by at least one page because the VM
+	 * pointer packing schemes using KERNEL_PMAP_HEAP_RANGE_START as a base
+	 * do not admit this address to be part of any zone submap.
 	 */
-	if (!PE_parse_boot_argn("kmapoff", &kmapoff_pgcnt,
-	    sizeof (kmapoff_pgcnt)))
-		kmapoff_pgcnt = early_random() & 0x1ff;	/* 9 bits */
-
-	if (kmapoff_pgcnt > 0 &&
-	    vm_allocate_kernel(kernel_map, &kmapoff_kaddr,
-	    kmapoff_pgcnt * PAGE_SIZE_64, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_OSFMK) != KERN_SUCCESS)
+	kmapoff_pgcnt = (early_random() & 0x1ff) + 1; /* 9 bits */
+	if (vm_allocate_kernel(kernel_map, &kmapoff_kaddr,
+	    kmapoff_pgcnt * PAGE_SIZE_64, VM_FLAGS_ANYWHERE, VM_KERN_MEMORY_OSFMK) != KERN_SUCCESS) {
 		panic("cannot vm_allocate %u kernel_map pages", kmapoff_pgcnt);
-
-#if CONFIG_EMBEDDED
-	PE_parse_boot_argn("log_executable_mem_entry",
-			   &log_executable_mem_entry,
-			   sizeof (log_executable_mem_entry));
-#endif /* CONFIG_EMBEDDED */
+	}
 
 	vm_mem_bootstrap_log("pmap_init");
 	pmap_init();
-	
-	kmem_alloc_ready = TRUE;
 
-	if (PE_parse_boot_argn("zsize", &zsizearg, sizeof (zsizearg)))
-		zsize = zsizearg * 1024ULL * 1024ULL;
-	else {
-		zsize = sane_size >> 2;				/* Get target zone size as 1/4 of physical memory */
-	}
-
-	if (zsize < ZONE_MAP_MIN)
-		zsize = ZONE_MAP_MIN;	/* Clamp to min */
-
-#if defined(__LP64__)
-	zsize += zsize >> 1;
-#endif /* __LP64__ */
-	if (zsize > sane_size >> 1)
-		zsize = sane_size >> 1;	/* Clamp to half of RAM max */
-#if !__LP64__
-	if (zsize > ZONE_MAP_MAX)
-		zsize = ZONE_MAP_MAX;	/* Clamp to 1.5GB max for K32 */
-#endif /* !__LP64__ */
-
-	vm_mem_bootstrap_log("kext_alloc_init");
-	kext_alloc_init();
-
-	vm_mem_bootstrap_log("zone_init");
-	assert((vm_size_t) zsize == zsize);
-	zone_init((vm_size_t) zsize);	/* Allocate address space for zones */
-
-	/* The vm_page_zone must be created prior to kalloc_init; that
-	 * routine can trigger zalloc()s (for e.g. mutex statistic structure
-	 * initialization). The vm_page_zone must exist to saisfy fictitious
-	 * page allocations (which are used for guard pages by the guard
-	 * mode zone allocator).
-	 */
-	vm_mem_bootstrap_log("vm_page_module_init");
-	vm_page_module_init();
-
-	vm_mem_bootstrap_log("kalloc_init");
-	kalloc_init();
+	kernel_startup_initialize_upto(STARTUP_SUB_KMEM_ALLOC);
 
 	vm_mem_bootstrap_log("vm_fault_init");
 	vm_fault_init();
 
-	vm_mem_bootstrap_log("memory_manager_default_init");
-	memory_manager_default_init();
+	vm_mem_bootstrap_log("kext_alloc_init");
+	kext_alloc_init();
 
-	vm_mem_bootstrap_log("memory_object_control_bootstrap");
-	memory_object_control_bootstrap();
-
-	vm_mem_bootstrap_log("device_pager_bootstrap");
-	device_pager_bootstrap();
+	kernel_startup_initialize_upto(STARTUP_SUB_ZALLOC);
 
 	vm_paging_map_init();
 
-	vm_mem_bootstrap_log("vm_mem_bootstrap done");
+	vm_page_delayed_work_init_ctx();
 
-#ifdef	CONFIG_ZCACHE
-	zcache_bootstrap();
-#endif
-	vm_rtfault_record_init();
-}
-
-void
-vm_mem_init(void)
-{
-	vm_object_init();
+	if (iokit_iomd_setownership_enabled) {
+		kprintf("IOKit IOMD setownership ENABLED\n");
+	} else {
+		kprintf("IOKit IOMD setownership DISABLED\n");
+	}
 }

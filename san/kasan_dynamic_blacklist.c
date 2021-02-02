@@ -43,7 +43,7 @@ static void
 dybl_lock(boolean_t *b)
 {
 	*b = ml_set_interrupts_enabled(false);
-	simple_lock(&_dybl_lock);
+	simple_lock(&_dybl_lock, LCK_GRP_NULL);
 }
 
 static void
@@ -201,7 +201,7 @@ kasan_dybl_load_kext(uintptr_t addr, const char *kextname)
 			kernel_segment_command_t *seg = (void *)cmd;
 			bool is_exec = seg->initprot & VM_PROT_EXECUTE;
 
-#if CONFIG_EMBEDDED
+#if defined(__arm__) || defined(__arm64__)
 			if (is_exec && strcmp("__TEXT_EXEC", seg->segname) != 0) {
 				is_exec = false;
 			}
@@ -241,8 +241,7 @@ kasan_dybl_unload_kext(uintptr_t addr)
 		if (cmd->cmd == LC_SEGMENT_KERNEL) {
 			kernel_segment_command_t *seg = (void *)cmd;
 			bool is_exec = seg->initprot & VM_PROT_EXECUTE;
-
-#if CONFIG_EMBEDDED
+#if defined(__arm__) || defined(__arm64__)
 			if (is_exec && strcmp("__TEXT_EXEC", seg->segname) != 0) {
 				is_exec = false;
 			}
@@ -314,7 +313,6 @@ addr_to_func(uintptr_t addr, const kernel_mach_header_t *mh)
 	 * iterate the symbols, looking for the closest one to `addr'
 	 */
 	for (i = 0; i < (int)st->nsyms; i++) {
-
 		uint8_t n_type = syms[i].n_type;
 		const char *name = strings + syms[i].n_un.n_strx;
 
@@ -364,7 +362,8 @@ kasan_is_blacklisted(access_t type)
 		return false;
 	}
 
-	nframes = backtrace_frame(bt, MAX_FRAMES, __builtin_frame_address(0));
+	nframes = backtrace_frame(bt, MAX_FRAMES, __builtin_frame_address(0),
+	    NULL);
 	boolean_t flag;
 
 	if (nframes >= 1) {
@@ -390,7 +389,7 @@ kasan_is_blacklisted(access_t type)
 			blhe->count++;
 			blhe->ble->count++;
 			// printf("KASan: blacklist cache hit (%s:%s [0x%lx] 0x%x)\n",
-			// 		ble->kext_name ?: "" , ble->func_name ?: "", VM_KERNEL_UNSLIDE(bt[i]), mask);
+			//              ble->kext_name ?: "" , ble->func_name ?: "", VM_KERNEL_UNSLIDE(bt[i]), mask);
 			dybl_unlock(flag);
 			return true;
 		}
@@ -398,7 +397,6 @@ kasan_is_blacklisted(access_t type)
 
 	/* no hits - slowpath */
 	for (uint32_t i = 0; i < nframes; i++) {
-
 		const char *kextname = NULL;
 		const char *funcname = NULL;
 
@@ -452,7 +450,7 @@ kasan_is_blacklisted(access_t type)
 
 			if (count == 0) {
 				printf("KASan: ignoring blacklisted violation (%s:%s [0x%lx] %d 0x%x)\n",
-						kextname, funcname, VM_KERNEL_UNSLIDE(bt[i]), i, type);
+				    kextname, funcname, VM_KERNEL_UNSLIDE(bt[i]), i, type);
 			}
 
 			return true;
@@ -476,7 +474,7 @@ add_blacklist_entry(const char *kext, const char *func, access_t type)
 	if (kext) {
 		size_t sz = __nosan_strlen(kext) + 1;
 		if (sz > 1) {
-			char *s = kalloc(sz);
+			char *s = zalloc_permanent(sz, ZALIGN_NONE);
 			__nosan_strlcpy(s, kext, sz);
 			ble->kext_name = s;
 		}
@@ -485,7 +483,7 @@ add_blacklist_entry(const char *kext, const char *func, access_t type)
 	if (func) {
 		size_t sz = __nosan_strlen(func) + 1;
 		if (sz > 1) {
-			char *s = kalloc(sz);
+			char *s = zalloc_permanent(sz, ZALIGN_NONE);
 			__nosan_strlcpy(s, func, sz);
 			ble->func_name = s;
 		}
@@ -525,9 +523,9 @@ static const struct {
 
 	/* convenience aliases */
 	{ .type = TYPE_POISON_GLOBAL, .str = "GLOB" },
-	{ .type = TYPE_POISON_HEAP,   .str = "HEAP" },
+	{ .type = TYPE_POISON_HEAP, .str = "HEAP" },
 };
-static size_t typemap_sz = sizeof(typemap)/sizeof(typemap[0]);
+static size_t typemap_sz = sizeof(typemap) / sizeof(typemap[0]);
 
 static inline access_t
 map_type(const char *str)

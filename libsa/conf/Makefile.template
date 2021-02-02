@@ -40,6 +40,8 @@ COMP_SUBDIRS =
 
 %OBJS
 
+%LIBOBJS
+
 %CFILES
 
 %CXXFILES
@@ -69,13 +71,23 @@ $(COMPONENT).filelist: $(OBJS)
 		$(SEG_HACK) -n __KLD -o $${kld_file}__ $${kld_file} || exit 1; \
 		mv $${kld_file}__ $${kld_file} || exit 1; \
 	done
-	@echo "$(ColorL)LDFILELIST$(Color0) $(ColorLF)$(COMPONENT)$(Color0)"
+	@$(LOG_LDFILELIST) "$(COMPONENT)"
 	$(_v)for obj in ${OBJS}; do	\
-		 echo $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
+		 $(ECHO) $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
 	done > $(COMPONENT).filelist
 
+$(COMPONENT).libfilelist: $(LIBOBJS)
+	@$(LOG_LDFILELIST) "lib$(COMPONENT)"
+	$(_v)for obj in ${LIBOBJS}; do	\
+		 $(ECHO) $(TARGET)/$(CURRENT_KERNEL_CONFIG)/$${obj}; \
+	done > $(COMPONENT).libfilelist
 
+
+ifeq ($(RC_ProjectName),xnu_libraries)
+do_all: $(COMPONENT).libfilelist
+else
 do_all: $(COMPONENT).filelist
+endif
 
 do_build_all:: do_all
 

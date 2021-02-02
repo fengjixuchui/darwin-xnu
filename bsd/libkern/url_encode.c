@@ -66,14 +66,14 @@ url_decode(char *str)
 				c += hex2int(*str++);
 			}
 			if (*str) {
-				c = (c << 4) + hex2int(*str++);
+				c = (char)((c << 4) + hex2int(*str++));
 			}
 
 			if (isprint(c)) {
 				/* overwrite the '%' with the new char, and bump the rest of the
 				 * string down a few characters */
 				*esc++ = c;
-				str = memmove(esc, str, strlen(str)+1);
+				str = memmove(esc, str, strlen(str) + 1);
 			}
 		} else {
 			str++;

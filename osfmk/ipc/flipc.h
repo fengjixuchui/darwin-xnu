@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2015-2020 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -33,7 +33,7 @@
  *	Definitions for fast local ipc (flipc).
  */
 
-#ifndef	_IPC_FLIPC_H_
+#ifndef _IPC_FLIPC_H_
 #define _IPC_FLIPC_H_
 
 #if MACH_KERNEL_PRIVATE && MACH_FLIPC
@@ -55,15 +55,15 @@ __BEGIN_DECLS
  */
 
 typedef struct flipc_port {
-	struct mnl_obj		obj;		// Necessary to be in mnl_name_table[]
-    ipc_port_t          lport;      // The associated local ipc_port
-	mach_node_t			hostnode;	// Node holding the recieve right
+	struct mnl_obj          obj;            // Necessary to be in mnl_name_table[]
+	ipc_port_t          lport;  // The associated local ipc_port
+	mach_node_t                     hostnode;       // Node holding the recieve right
 	uint32_t            peek_count; // How many kmsgs in mq have been peeked
-    uint32_t            state:3;    // See FPORT_STATE_* defines below
+	uint32_t            state:3;// See FPORT_STATE_* defines below
 } *flipc_port_t;
 
-#define FPORT_NULL			((flipc_port_t) 0UL)
-#define	FPORT_VALID(fport)	((fport) != FPORT_NULL)
+#define FPORT_NULL                      ((flipc_port_t) 0UL)
+#define FPORT_VALID(fport)      ((fport) != FPORT_NULL)
 
 #define FPORT_STATE_INIT            (0) // Port is being initialized
 #define FPORT_STATE_PROXY           (1) // Principal is on another node
@@ -76,12 +76,6 @@ typedef struct flipc_port {
 /*** FLIPC Node Managment Declarations (used by mach node layer) ***/
 
 extern mach_node_id_t   localnode_id;   // This node's FLIPC id.
-
-/*  The mach node layer calls flipc_init() once before it calls any other
- *  flipc entry points.  Returns KERN_SUCCESS on success; otherwise flipc
- *  is not initialized and cannot be used.
- */
-kern_return_t flipc_init(void);
 
 /*  flipc_node_prepare() is called by mach node layer when a remote node is
  *  registered by a link driver.  This is the flipc layer's opportunity to
@@ -110,10 +104,10 @@ kern_return_t flipc_node_retire(mach_node_t node);
  */
 
 typedef struct flipc_ack_msg {
-    struct mnl_msg  mnl;            // Flipc message starts with mnl message
-    mach_node_id_t  resend_to;      // Node ID for resends (if NAK)
-    uint8_t         msg_count;      // Number of msgs being ackd/nakd
-}   __attribute__((__packed__)) *flipc_ack_msg_t;
+	struct mnl_msg  mnl;        // Flipc message starts with mnl message
+	mach_node_id_t  resend_to;  // Node ID for resends (if NAK)
+	uint8_t         msg_count;  // Number of msgs being ackd/nakd
+}   __attribute__((__packed__)) * flipc_ack_msg_t;
 
 #define FLIPC_CMD_ID (0x43504952UL) // msgh_id "RIPC" for FLIPC msgs
 #define FLIPC_CMD_IPCMESSAGE    (1) // IPC Msg: <node> is sender; <fname> is dest port
@@ -126,21 +120,21 @@ typedef struct flipc_ack_msg {
  *  node is terminated, in which case it returns MNL_MSG_NULL.
  */
 mnl_msg_t flipc_msg_to_remote_node(mach_node_t  to_node,
-                                   uint32_t     flags);
+    uint32_t     flags);
 
 /*  The node layer calls flipc_msg_to_remote_node() to post the next message
  *  from <from_node>.  This function will block until a message is available
  *  or the node is terminated, in which case it returns MNL_MSG_NULL.
  */
 void flipc_msg_from_node(mach_node_t    from_node,
-                         mnl_msg_t      msg_arg,
-                         uint32_t       flags);
+    mnl_msg_t      msg_arg,
+    uint32_t       flags);
 
 /*  The node layer calls flipc_msg_free() to dispose of sent messages that
  *  originated in the FLIPC layer.
  */
 void flipc_msg_free(mnl_msg_t   msg,
-                    uint32_t    flags);
+    uint32_t    flags);
 
 
 /*** FLIPC Message Declarations (used by mach ipc subsystem) ***/
@@ -156,12 +150,11 @@ void flipc_msg_free(mnl_msg_t   msg,
  *	Called from mach ipc_mqueue.c when a flipc-originated message is consumed.
  */
 void flipc_msg_ack(mach_node_t  node,
-                   ipc_mqueue_t mqueue,
-                   boolean_t    delivered);
+    ipc_mqueue_t mqueue,
+    boolean_t    delivered);
 
 
 __END_DECLS
 
-#endif	// MACH_KERNEL_PRIVATE
-#endif	// _IPC_FLIPC_H_
-
+#endif  // MACH_KERNEL_PRIVATE
+#endif  // _IPC_FLIPC_H_

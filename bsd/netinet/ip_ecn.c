@@ -68,14 +68,10 @@
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
-#if INET6
 #include <netinet/ip6.h>
-#endif
 
 #include <netinet/ip_ecn.h>
-#if INET6
 #include <netinet6/ip6_ecn.h>
-#endif
 
 /*
  * modify outer ECN (TOS) field on ingress operation (tunnel encapsulation).
@@ -83,17 +79,18 @@
 void
 ip_ecn_ingress(int mode, u_int8_t *outer, const u_int8_t *inner)
 {
-	if (!outer || !inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip_ecn_ingress");
+	}
 
 	*outer = *inner;
 	switch (mode) {
-	case ECN_NORMAL:		/* ECN normal mode, copy flags */
+	case ECN_NORMAL:                /* ECN normal mode, copy flags */
 		break;
-	case ECN_COMPATIBILITY:		/* ECN compatibility mode */
+	case ECN_COMPATIBILITY:         /* ECN compatibility mode */
 		*outer &= ~IPTOS_ECN_MASK;
 		break;
-	case ECN_NOCARE:	/* no consideration to ECN */
+	case ECN_NOCARE:        /* no consideration to ECN */
 		break;
 	}
 }
@@ -104,8 +101,9 @@ ip_ecn_ingress(int mode, u_int8_t *outer, const u_int8_t *inner)
 int
 ip_ecn_egress(int mode, const u_int8_t *outer, u_int8_t *inner)
 {
-	if (!outer || !inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip_ecn_egress");
+	}
 
 	switch (mode) {
 	/* Process ECN for both normal and compatibility modes */
@@ -115,24 +113,24 @@ ip_ecn_egress(int mode, const u_int8_t *outer, u_int8_t *inner)
 		    ((*inner & IPTOS_ECN_MASK) != IPTOS_ECN_NOTECT)) {
 			*inner |= IPTOS_ECN_CE;
 		} else if ((*outer & IPTOS_ECN_MASK) == IPTOS_ECN_ECT1 &&
-				   (*inner & IPTOS_ECN_MASK) == IPTOS_ECN_ECT0) {
+		    (*inner & IPTOS_ECN_MASK) == IPTOS_ECN_ECT0) {
 			*inner = *outer;
 		}
 		break;
-	case ECN_NOCARE:	/* no consideration to ECN */
+	case ECN_NOCARE:        /* no consideration to ECN */
 		break;
 	}
-	return (1);
+	return 1;
 }
 
-#if INET6
 void
 ip6_ecn_ingress(int mode, u_int32_t *outer, const u_int32_t *inner)
 {
 	u_int8_t outer8, inner8;
 
-	if (!outer || !inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip6_ecn_ingress");
+	}
 
 	inner8 = (ntohl(*inner) >> 20) & 0xff;
 	ip_ecn_ingress(mode, &outer8, &inner8);
@@ -145,17 +143,18 @@ ip6_ecn_egress(int mode, const u_int32_t *outer, u_int32_t *inner)
 {
 	u_int8_t outer8, inner8;
 
-	if (!outer || !inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip6_ecn_egress");
+	}
 
 	outer8 = (ntohl(*outer) >> 20) & 0xff;
 	inner8 = (ntohl(*inner) >> 20) & 0xff;
 	if (ip_ecn_egress(mode, &outer8, &inner8) == 0) {
-		return (0);
+		return 0;
 	}
 	*inner &= ~htonl(0xff << 20);
 	*inner |= htonl((u_int32_t)inner8 << 20);
-	return (1);
+	return 1;
 }
 
 /*
@@ -167,8 +166,9 @@ ip46_ecn_ingress(int mode, u_int32_t *outer, const u_int8_t *tos)
 {
 	u_int8_t outer8;
 
-	if (!outer || !tos)
+	if (!outer || !tos) {
 		panic("NULL pointer passed to ip46_ecn_ingress");
+	}
 
 	ip_ecn_ingress(mode, &outer8, tos);
 	*outer &= ~htonl(0xff << 20);
@@ -184,8 +184,9 @@ ip46_ecn_egress(int mode, const u_int32_t *outer, u_int8_t *tos)
 {
 	u_int8_t outer8;
 
-	if (!outer || !tos)
+	if (!outer || !tos) {
 		panic("NULL pointer passed to ip46_ecn_egress");
+	}
 
 	outer8 = (ntohl(*outer) >> 20) & 0xff;
 	return ip_ecn_egress(mode, &outer8, tos);
@@ -200,8 +201,9 @@ ip64_ecn_ingress(int mode, u_int8_t *outer, const u_int32_t *inner)
 {
 	u_int8_t inner8;
 
-	if (!outer || ! inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip64_ecn_ingress");
+	}
 
 	inner8 = (ntohl(*inner) >> 20) & 0xff;
 	ip_ecn_ingress(mode, outer, &inner8);
@@ -216,17 +218,16 @@ ip64_ecn_egress(int mode, const u_int8_t *outer, u_int32_t *inner)
 {
 	u_int8_t inner8;
 
-	if (!outer || !inner)
+	if (!outer || !inner) {
 		panic("NULL pointer passed to ip64_ecn_egress");
+	}
 
 	inner8 = (ntohl(*inner) >> 20) & 0xff;
 	if (ip_ecn_egress(mode, outer, &inner8) == 0) {
-		return (0);
+		return 0;
 	}
 
 	*inner &= ~htonl(0xff << 20);
 	*inner |= htonl((u_int32_t)inner8 << 20);
-	return (1);
+	return 1;
 }
-
-#endif

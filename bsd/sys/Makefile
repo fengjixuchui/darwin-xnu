@@ -31,9 +31,14 @@ DATAFILES = \
 	timeb.h times.h tprintf.h trace.h tty.h  ttychars.h ttycom.h \
 	ttydefaults.h ttydev.h  types.h ubc.h ucontext.h ucred.h uio.h un.h unistd.h unpcb.h \
 	user.h utfconv.h utsname.h vadvise.h vcmd.h \
-	vm.h vmmeter.h vmparam.h vnioctl.h vnode.h vnode_if.h vstat.h wait.h xattr.h \
+	vm.h vmmeter.h vmparam.h vnioctl.h vnode.h vnode_if.h vsock.h vstat.h wait.h xattr.h \
 	_select.h _structs.h _types.h _endian.h domain.h protosw.h \
-	spawn.h timex.h commpage.h
+	spawn.h timex.h commpage.h log_data.h
+
+# Installs header file for DriverKit drivers -
+#	  $(DSTROOT)/System/DriverKit/System/usr/include/
+DRIVERKIT_DATAFILES = \
+	cdefs.h _types.h _endian.h
 
 # Installs header file for Apple internal use in user level -
 #	  $(DSTROOT)/System/Library/Frameworks/System.framework/PrivateHeaders
@@ -64,7 +69,10 @@ PRIVATE_DATAFILES = \
 	kern_control.h \
 	kern_event.h \
 	kern_memorystatus.h \
+	kern_memorystatus_freeze.h \
+	kern_memorystatus_notify.h \
 	kern_overrides.h \
+	kern_sysctl.h \
 	mbuf.h \
 	mman.h \
 	monotonic.h \
@@ -90,6 +98,7 @@ PRIVATE_DATAFILES = \
 	ulock.h \
 	unpcb.h \
 	ux_exception.h \
+	vsock.h \
 	work_interval.h \
 	process_policy.h \
 	proc_uuid_policy.h \
@@ -97,6 +106,11 @@ PRIVATE_DATAFILES = \
 	pgo.h \
 	memory_maintenance.h \
 	commpage.h
+
+# Installs header file for Apple internal use by DriverKit drivers -
+#	  $(DSTROOT)/System/DriverKit/System/usr/local/include/
+DRIVERKIT_PRIVATE_DATAFILES = \
+	appleapiopts.h kdebug.h
 
 # Installs header file for kernel extensions -
 #	  $(DSTROOT)/System/Library/Frameworks/Kernel.framework/Headers
@@ -108,14 +122,14 @@ KERNELFILES = \
 	errno.h ev.h event.h fcntl.h file.h filio.h \
 	ioccom.h ioctl.h ipc.h \
 	ioctl_compat.h  kernel.h kernel_types.h kern_event.h lock.h lockf.h \
-	kauth.h kdebug.h  md5.h kern_control.h imgact.h malloc.h namei.h \
-	mman.h mbuf.h mount.h netport.h param.h paths.h \
+	kauth.h kdebug.h kdebug_kernel.h md5.h kern_control.h imgact.h malloc.h \
+	namei.h mman.h mbuf.h mount.h netport.h param.h paths.h \
 	proc.h  queue.h random.h resource.h \
 	sbuf.h posix_sem.h posix_shm.h sem.h shm.h \
 	select.h signal.h socket.h socketvar.h sockio.h stat.h stdio.h \
 	sysctl.h syslimits.h syslog.h systm.h sys_domain.h  time.h \
 	types.h ubc.h ucontext.h ucred.h uio.h un.h unistd.h unpcb.h \
-	utfconv.h vm.h vmparam.h vnode.h vnode_if.h xattr.h \
+	utfconv.h unicode.h vm.h vmparam.h vnode.h vnode_if.h vsock.h xattr.h \
 	_select.h _structs.h _types.h _endian.h protosw.h domain.h \
 	kpi_mbuf.h kpi_socket.h kpi_socketfilter.h \
 	ttycom.h termios.h msg.h \
@@ -140,8 +154,11 @@ PRIVATE_KERNELFILES = \
 	fslog.h \
 	kasl.h \
 	kern_memorystatus.h \
+	kern_memorystatus_freeze.h \
+	kern_memorystatus_notify.h \
 	kpi_private.h \
 	ktrace.h \
+	linker_set.h \
 	mach_swapon.h \
 	monotonic.h \
 	msgbuf.h \
@@ -168,17 +185,19 @@ PRIVATE_KERNELFILES = \
 	doc_tombstone.h \
 	fsevents.h \
 	work_interval.h \
+	kern_sysctl.h \
+	vsock_transport.h \
 
 XNU_ONLY_EXPORTS = \
 	bsdtask_info.h \
 	file_internal.h \
 	filedesc.h \
 	guarded.h \
-	linker_set.h \
 	mount_internal.h \
 	munge.h \
 	pipe.h \
 	proc_internal.h \
+	proc_require.h \
 	pthread_internal.h \
 	resourcevar.h \
 	semaphore.h \
@@ -186,23 +205,37 @@ XNU_ONLY_EXPORTS = \
 	uio_internal.h \
 	ulock.h \
 	ux_exception.h \
-	vnode_internal.h
+	vnode_internal.h \
+	vsock_domain.h 
+
+MODULEMAP_INCDIR_FILES = \
+	sys__types.modulemap \
+	sys_types.modulemap \
+	sys_cdefs.modulemap
 
 # /usr/include
 INSTALL_MI_LIST	= ${DATAFILES}
 
+INSTALL_DRIVERKIT_MI_LIST = ${DRIVERKIT_DATAFILES}
+
+INSTALL_MODULEMAP_INCDIR_MI_LIST = ${MODULEMAP_INCDIR_FILES}
+
 INSTALL_MI_GEN_LIST = syscall.h _posix_availability.h _symbol_aliasing.h
+
+INSTALL_DRIVERKIT_MI_GEN_LIST = _posix_availability.h _symbol_aliasing.h
 
 INSTALL_MI_DIR = sys
 
 EXPORT_MI_LIST	= ${KERNELFILES} ${PRIVATE_KERNELFILES} ${XNU_ONLY_EXPORTS}
 
-EXPORT_MI_GEN_LIST = syscall.h sysproto.h kdebugevents.h
+EXPORT_MI_GEN_LIST = syscall.h sysproto.h
 
 EXPORT_MI_DIR = sys
 
 # /System/Library/Frameworks/System.framework/PrivateHeaders
 INSTALL_MI_LCL_LIST = ${PRIVATE_DATAFILES}
+
+INSTALL_DRIVERKIT_MI_LCL_LIST = ${DRIVERKIT_PRIVATE_DATAFILES}
 
 # /System/Library/Frameworks/Kernel.framework/PrivateHeaders
 INSTALL_KF_MI_LCL_LIST =  ${KERNELFILES} ${PRIVATE_KERNELFILES}
@@ -215,52 +248,51 @@ INSTALL_KF_MI_LIST = ${KERNELFILES}
 INSTALL_KF_MI_GEN_LIST =
 
 MAKESYSCALLS = $(SRCROOT)/bsd/kern/makesyscalls.sh
-MAKEKDEBUGEVENTS = $(SRCROOT)/bsd/kern/makekdebugevents.py
 
 $(OBJROOT)/cscope.genhdrs:
 	$(_v)mkdir -p $(OBJROOT)/cscope.genhdrs
 
-$(OBJROOT)/syscall.codes: $(SRCROOT)/bsd/kern/syscalls.master $(MAKESYSCALLS)
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)$@$(Color0) from $(ColorF)$<$(Color0)";
+$(OBJROOT)/syscall.codes: $(TARGET)/bsd.syscalls.master
+	@$(LOG_GENERATE) "$(ColorLF)$@$(Color0) from $(ColorF)$(<F)$(Color0)"
 	$(_v)$(MAKESYSCALLS) $< trace > $@
 
 $(OBJROOT)/trace.codes: $(SRCROOT)/bsd/kern/trace_codes $(OBJROOT)/syscall.codes
 	$(_v)sort -g $(SRCROOT)/bsd/kern/trace_codes $(OBJROOT)/syscall.codes >$@
 
-syscall.h: $(SRCROOT)/bsd/kern/syscalls.master $(MAKESYSCALLS) $(OBJROOT)/cscope.genhdrs
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)bsd/sys/$@$(Color0) from $(ColorF)$<$(Color0)";
+syscall.h: $(TARGET)/bsd.syscalls.master $(OBJROOT)/cscope.genhdrs
+	@$(LOG_GENERATE) "$(ColorLF)bsd/sys/$@$(Color0) from $(ColorF)$(<F)$(Color0)"
 	@echo "$(OBJPATH)/bsd/sys/$@" > $(OBJROOT)/cscope.genhdrs/$@.path
 	$(_v)$(MAKESYSCALLS) $< header > /dev/null
 
-sysproto.h: $(SRCROOT)/bsd/kern/syscalls.master $(MAKESYSCALLS) $(OBJROOT)/cscope.genhdrs
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)bsd/sys/$@$(Color0) from $(ColorF)$<$(Color0)";
+sysproto.h: $(TARGET)/bsd.syscalls.master $(OBJROOT)/cscope.genhdrs
+	@$(LOG_GENERATE) "bsd/sys/$@$(Color0) from $(ColorF)$(<F)$(Color0)"
 	@echo "$(OBJPATH)/bsd/sys/$@" > $(OBJROOT)/cscope.genhdrs/$@.path
 	$(_v)$(MAKESYSCALLS) $< proto > /dev/null
 
-kdebugevents.h:  $(OBJROOT)/trace.codes $(MAKEKDEBUGEVENTS) $(OBJROOT)/cscope.genhdrs
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)bsd/sys/$@$(Color0) from $(ColorF)$<$(Color0)";
-	@echo "$(OBJPATH)/bsd/sys/$@" > $(OBJROOT)/cscope.genhdrs/$@.path
-	$(_v)$(MAKEKDEBUGEVENTS) $< > "$(OBJPATH)/bsd/sys/$@"
-
 MAKE_POSIX_AVAILABILITY = $(SRCROOT)/bsd/sys/make_posix_availability.sh
 _posix_availability.h: $(MAKE_POSIX_AVAILABILITY)
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)bsd/sys/$@$(Color0)";
+	@$(LOG_GENERATE) "bsd/sys/$@$(Color0)"
 	$(_v)$(MAKE_POSIX_AVAILABILITY) "$@"
 
 MAKE_SYMBOL_ALIASING = $(SRCROOT)/bsd/sys/make_symbol_aliasing.sh
 _symbol_aliasing.h: $(MAKE_SYMBOL_ALIASING)
-	@echo "[$(CMD_MC)] $(ColorH)GENERATING$(Color0) $(ColorLF)bsd/sys/$@$(Color0)";
+	@$(LOG_GENERATE) "bsd/sys/$@$(Color0)"
 	$(_v)$(MAKE_SYMBOL_ALIASING) "$(SDKROOT)" "$@"
+
+# generated headers needed early (used by iig during installhdrs of iokit/DriverKit)
+SETUP_GEN_LIST = _posix_availability.h _symbol_aliasing.h
+
+do_build_setup:: $(SETUP_GEN_LIST)
 
 TRACE_CODES_DEST = \
 	$(DSTROOT)/$(INSTALL_SHARE_MISC_DIR)/trace.codes
 
 $(TRACE_CODES_DEST): $(OBJROOT)/trace.codes
 	$(_v)$(MKDIR) $(DSTROOT)/$(INSTALL_SHARE_MISC_DIR)
-	@echo INSTALL $(@F)
+	@$(LOG) INSTALL "$(@F)"
 	$(_v)$(INSTALL) $(INSTALL_FLAGS) $(OBJROOT)/trace.codes $@
 
-do_textfiles_install:: $(TRACE_CODES_DEST)
+do_textfiles_install_mi:: $(TRACE_CODES_DEST)
 
 include $(MakeInc_rule)
 include $(MakeInc_dir)

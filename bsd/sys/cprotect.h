@@ -27,7 +27,7 @@
  */
 
 #ifndef _SYS_CPROTECT_H_
-#define	_SYS_CPROTECT_H_
+#define _SYS_CPROTECT_H_
 
 #ifdef KERNEL_PRIVATE
 
@@ -38,25 +38,26 @@
 #include <crypto/aes.h>
 #include <stdbool.h>
 #include <uuid/uuid.h>
+#include <libkern/crypto/sha1.h>
 
 __BEGIN_DECLS
 
 #define CP_CODE(code) FSDBG_CODE(DBG_CONTENT_PROT, code)
-/* 
+/*
  * Class DBG_FSYSTEM == 0x03
  * Subclass DBG_CONTENT_PROT == 0xCF
  * These debug codes are of the form 0x03CFzzzz
  */
 
 enum {
-	CPDBG_OFFSET_IO = CP_CODE(0),	/* 0x03CF0000 */
+	CPDBG_OFFSET_IO = CP_CODE(0),   /* 0x03CF0000 */
 };
 
 /* normally the debug events are no-ops */
-#define CP_DEBUG(x,a,b,c,d,e) do {} while (0);
+#define CP_DEBUG(x, a, b, c, d, e) do {} while (0);
 
 /* dev kernels only! */
-#if !SECURE_KERNEL 
+#if !SECURE_KERNEL
 
 /* KDEBUG events used by content protection subsystem */
 #if 0
@@ -66,12 +67,13 @@ enum {
 
 #endif
 
-#define CP_MAX_WRAPPEDKEYSIZE     128	/* The size of the largest allowed key */
+#define CP_MAX_WRAPPEDKEYSIZE     128   /* The size of the largest allowed key */
+#define VFS_CP_MAX_CACHEBUFLEN    64    /* Maximum size of the cached key */
 
 /* lock events from AppleKeyStore */
 enum {
-	CP_ACTION_LOCKED	= 0,
-	CP_ACTION_UNLOCKED	= 1,
+	CP_ACTION_LOCKED        = 0,
+	CP_ACTION_UNLOCKED      = 1,
 };
 /*
  * Ideally, cp_key_store_action_t would be an enum, but we cannot fix
@@ -87,8 +89,8 @@ typedef int cp_key_store_action_t;
  */
 typedef unsigned char cp_lock_state_t;
 enum {
-	CP_LOCKED_STATE		= 0,
-	CP_UNLOCKED_STATE	= 1,
+	CP_LOCKED_STATE         = 0,
+	CP_UNLOCKED_STATE       = 1,
 };
 
 typedef uint32_t cp_key_class_t;
@@ -98,6 +100,27 @@ typedef uint64_t cp_crypto_id_t;
 
 typedef struct cprotect *cprotect_t;
 typedef struct cpx *cpx_t;
+
+#ifdef BSD_KERNEL_PRIVATE
+/* Not for consumption outside of XNU */
+typedef uint32_t cpx_flags_t;
+/*
+ * This is a CPX structure with a fixed-length key buffer. We need this defined in a header
+ * so that we can use this structure to allocate the memory for the zone(s) properly.
+ */
+typedef struct fcpx {
+#ifdef DEBUG
+	uint32_t                cpx_magic1;
+#endif // DEBUG
+	aes_encrypt_ctx         *cpx_iv_aes_ctx_ptr;// Context used for generating the IV
+	cpx_flags_t             cpx_flags;
+	uint16_t                cpx_max_key_len;
+	uint16_t                cpx_key_len;
+	uint8_t                 cpx_cached_key[VFS_CP_MAX_CACHEBUFLEN];
+	//Fixed length all the way through
+} fcpx_t;
+
+#endif // BSD_KERNEL_PRIVATE
 
 typedef struct cp_key {
 	uint8_t len;
@@ -125,13 +148,13 @@ typedef cp_wrapped_key_s* cp_wrapped_key_t;
 
 typedef struct {
 	union {
-		ino64_t			inode;
-		cp_crypto_id_t	crypto_id;
+		ino64_t                 inode;
+		cp_crypto_id_t  crypto_id;
 	};
-	uint32_t			volume;
-	pid_t				pid;
-	uid_t				uid;
-	cp_key_revision_t	key_revision;
+	uint32_t                        volume;
+	pid_t                           pid;
+	uid_t                           uid;
+	cp_key_revision_t       key_revision;
 } cp_cred_s;
 
 typedef cp_cred_s* cp_cred_t;
@@ -143,23 +166,26 @@ typedef int new_key_t(cp_cred_t access, cp_key_class_t dp_class, cp_raw_key_t ke
 typedef int invalidater_t(cp_cred_t access); /* invalidates keys */
 typedef int backup_key_t(cp_cred_t access, const cp_wrapped_key_t wrapped_key_in, cp_wrapped_key_t wrapped_key_out);
 
-/* 
- * Flags for Interaction between AKS / Kernel 
+/*
+ * Flags for Interaction between AKS / Kernel
  * These are twiddled via the input/output structs in the above
  * wrapper/unwrapper functions.
  */
-#define CP_RAW_KEY_WRAPPEDKEY	0x00000001
+#define CP_RAW_KEY_WRAPPEDKEY   0x00000001
 
 /*
  * Function prototypes for kexts to interface with our internal cprotect
  * fields;  cpx provides opacity and allows us to modify behavior internally
  * without requiring kext changes.
  */
-cpx_t cpx_alloc(size_t key_size);
+cpx_t cpx_alloc(size_t key_size, bool needs_ctx);
+int cpx_alloc_ctx(cpx_t cpx);
+void cpx_free_ctx(cpx_t cpx);
 void cpx_init(cpx_t, size_t key_len);
+void cpx_init_ctx_ptr(cpx_t cpx);
 void cpx_free(cpx_t);
 void cpx_writeprotect(cpx_t cpx);
-__attribute__((const)) size_t cpx_size(size_t key_size);
+__attribute__((const)) size_t cpx_size(size_t key_len);
 __attribute__((pure)) bool cpx_is_sep_wrapped_key(const struct cpx *);
 void cpx_set_is_sep_wrapped_key(struct cpx *, bool);
 __attribute__((pure)) bool cpx_is_composite_key(const struct cpx *);
@@ -184,7 +210,7 @@ int cp_key_store_action(cp_key_store_action_t);
 int cp_key_store_action_for_volume(uuid_t volume_uuid, cp_key_store_action_t action);
 cp_key_os_version_t cp_os_version(void);
 // Should be cp_key_class_t but HFS has a conflicting definition
-int cp_is_valid_class (int isdir, int32_t protectionclass);
+int cp_is_valid_class(int isdir, int32_t protectionclass);
 
 __END_DECLS
 

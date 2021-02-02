@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Apple Inc. All rights reserved.
+ * Copyright (c) 2019 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -90,13 +90,29 @@ extern uint32_t kernel_post_tests_count;
 extern uint32_t total_post_tests_count;
 
 #define XNUPOST_TEST_CONFIG_BASIC(func)                   \
-	{                                                     \
-		XT_CONFIG_RUN, 0, -1, T_STATE_PASS, 0, 0, 0, (func), "xnu."#func \
+	{                                                 \
+	        .xt_config = XT_CONFIG_RUN,               \
+	        .xt_test_num = 0,                         \
+	        .xt_retval = -1,                          \
+	        .xt_expected_retval = T_STATE_PASS,       \
+	        .xt_begin_time = 0,                       \
+	        .xt_end_time = 0,                         \
+	        .xt_test_actions = 0,                     \
+	        .xt_func = (func),                        \
+	        .xt_name = "xnu."#func                    \
 	}
 
 #define XNUPOST_TEST_CONFIG_TEST_PANIC(func)                       \
-	{                                                              \
-		XT_CONFIG_EXPECT_PANIC, 0, -1, T_STATE_PASS, 0, 0, 0, (func), "xnu."#func \
+	{                                                          \
+	        .xt_config = XT_CONFIG_EXPECT_PANIC,               \
+	        .xt_test_num = 0,                                  \
+	        .xt_retval = -1,                                   \
+	        .xt_expected_retval = T_STATE_PASS,                \
+	        .xt_begin_time = 0,                                \
+	        .xt_end_time = 0,                                  \
+	        .xt_test_actions = 0,                              \
+	        .xt_func = (func),                                 \
+	        .xt_name = "xnu."#func                             \
 	}
 
 void xnupost_init(void);
@@ -109,7 +125,7 @@ kern_return_t xnupost_run_tests(xnupost_test_t test_list, uint32_t test_count);
 kern_return_t xnupost_list_tests(xnupost_test_t test_list, uint32_t test_count);
 kern_return_t xnupost_reset_tests(xnupost_test_t test_list, uint32_t test_count);
 
-int xnupost_export_testdata(void * outp, uint32_t size, uint32_t * lenp);
+int xnupost_export_testdata(void * outp, size_t size, uint32_t * lenp);
 uint32_t xnupost_get_estimated_testdata_size(void);
 
 kern_return_t kernel_do_post(void);

@@ -27,6 +27,7 @@
 #if KERNEL
 #include <atm/atm_internal.h>
 #endif
+#include <os/atomic_private.h>
 #include "firehose_types_private.h"
 
 OS_ASSUME_NONNULL_BEGIN
@@ -45,7 +46,7 @@ typedef union {
 		uint32_t _code;
 	} ftid;
 	firehose_tracepoint_id_t ftid_value;
-	_Atomic(firehose_tracepoint_id_t) ftid_atomic_value;
+	os_atomic(firehose_tracepoint_id_t) ftid_atomic_value;
 } firehose_tracepoint_id_u;
 
 #define FIREHOSE_STAMP_SLOP (1ULL << 36) // ~1minute
@@ -76,17 +77,17 @@ typedef struct firehose_tracepoint_s {
 			uint64_t ft_length : 16;
 		};
 		uint64_t ft_stamp_and_length;
-		_Atomic(uint64_t) ft_atomic_stamp_and_length;
+		os_atomic(uint64_t) ft_atomic_stamp_and_length;
 	};
 	uint8_t ft_data[];
 } *firehose_tracepoint_t;
 
 #define FIREHOSE_TRACE_ID_MAKE(ns, type, flags, code) \
 	(((firehose_tracepoint_id_u){ .ftid = { \
-		._namespace = ns, \
-		._type = type, \
-		._flags = flags, \
-		._code = code, \
+	        ._namespace = ns, \
+	        ._type = type, \
+	        ._flags = flags, \
+	        ._code = code, \
 	} }).ftid_value)
 
 #define FIREHOSE_TRACE_ID_SET_NS(tid, ns) \
@@ -96,12 +97,12 @@ typedef struct firehose_tracepoint_s {
 	((tid).ftid._type = _firehose_tracepoint_type_##ns##_##type)
 
 #define FIREHOSE_TRACE_ID_PC_STYLE(tid) \
-		((tid).ftid._flags & _firehose_tracepoint_flags_pc_style_mask)
+	        ((tid).ftid._flags & _firehose_tracepoint_flags_pc_style_mask)
 
 #define FIREHOSE_TRACE_ID_SET_PC_STYLE(tid, flag) ({ \
-		firehose_tracepoint_id_u _tmp_tid = (tid); \
-		_tmp_tid.ftid._flags &= ~_firehose_tracepoint_flags_pc_style_mask; \
-		_tmp_tid.ftid._flags |= _firehose_tracepoint_flags_pc_style_##flag; \
+	        firehose_tracepoint_id_u _tmp_tid = (tid); \
+	        _tmp_tid.ftid._flags &= ~_firehose_tracepoint_flags_pc_style_mask; \
+	        _tmp_tid.ftid._flags |= _firehose_tracepoint_flags_pc_style_##flag; \
 })
 
 #define FIREHOSE_TRACE_ID_HAS_FLAG(tid, ns, flag) \
@@ -157,7 +158,7 @@ static inline uint64_t
 firehose_tracepoint_time(firehose_activity_flags_t flags)
 {
 	if (firehose_precise_timestamps_enabled() ||
-			(flags & firehose_activity_flags_precise_timestamp)) {
+	    (flags & firehose_activity_flags_precise_timestamp)) {
 		return mach_continuous_time();
 	} else {
 		return mach_continuous_approximate_time();
@@ -169,10 +170,10 @@ __OSX_AVAILABLE(10.12) __IOS_AVAILABLE(10.0)
 __TVOS_AVAILABLE(10.0) __WATCHOS_AVAILABLE(3.0)
 void
 firehose_trace_metadata(firehose_stream_t stream, firehose_tracepoint_id_u ftid,
-			uint64_t stamp, const void* pubdata, size_t publen);
+    uint64_t stamp, const void* pubdata, size_t publen);
 #endif
 __END_DECLS
 
-OS_ASSUME_NONNULL_END
+    OS_ASSUME_NONNULL_END
 
 #endif // __FIREHOSE_FIREHOSE__

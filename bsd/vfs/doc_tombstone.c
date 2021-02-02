@@ -51,10 +51,8 @@ doc_tombstone_get(void)
 	ut = get_bsdthread_info(current_thread());
 
 	if (ut->t_tombstone == NULL) {
-		ut->t_tombstone = kalloc(sizeof(struct doc_tombstone));
-		if (ut->t_tombstone) {
-			memset(ut->t_tombstone, 0, sizeof(struct doc_tombstone));
-		}
+		ut->t_tombstone = kalloc_flags(sizeof(struct doc_tombstone),
+		    Z_WAITOK | Z_ZERO);
 	}
 
 	return ut->t_tombstone;
@@ -71,7 +69,7 @@ doc_tombstone_get(void)
 void
 doc_tombstone_clear(struct doc_tombstone *ut, vnode_t *old_vpp)
 {
-	uint32_t old_id = ut->t_lastop_document_id;
+	uint64_t old_id = ut->t_lastop_document_id;
 
 	ut->t_lastop_document_id = 0;
 	ut->t_lastop_parent = NULL;
@@ -86,15 +84,16 @@ doc_tombstone_clear(struct doc_tombstone *ut, vnode_t *old_vpp)
 	if (old_vpp) {
 		*old_vpp = NULL;
 		if (old_id && ut->t_lastop_item
-			&& vnode_vid(ut->t_lastop_item) == ut->t_lastop_item_vid) {
+		    && vnode_vid(ut->t_lastop_item) == ut->t_lastop_item_vid) {
 			int res = vnode_get(ut->t_lastop_item);
 			if (!res) {
 				// Need to check vid again
 				if (vnode_vid(ut->t_lastop_item) == ut->t_lastop_item_vid
-					&& !ISSET(ut->t_lastop_item->v_lflag, VL_TERMINATE))
+				    && !ISSET(ut->t_lastop_item->v_lflag, VL_TERMINATE)) {
 					*old_vpp = ut->t_lastop_item;
-				else
+				} else {
 					vnode_put(ut->t_lastop_item);
+				}
 			}
 		}
 	}
@@ -112,15 +111,19 @@ doc_tombstone_clear(struct doc_tombstone *ut, vnode_t *old_vpp)
 // temp filenames to work-around questionable application
 // behavior from apps like Autocad that perform unusual
 // sequences of file system operations for a "safe save".
-bool doc_tombstone_should_ignore_name(const char *nameptr, int len)
+bool
+doc_tombstone_should_ignore_name(const char *nameptr, int len)
 {
+	size_t real_len;
 	if (len == 0) {
-		len = strlen(nameptr);
+		real_len = strlen(nameptr);
+	} else {
+		real_len = (size_t)len;
 	}
 
-	if (   strncmp(nameptr, "atmp", 4) == 0
-		|| (len > 4 && strncmp(nameptr+len-4, ".bak", 4) == 0)
-		|| (len > 4 && strncmp(nameptr+len-4, ".tmp", 4) == 0)) {
+	if (strncmp(nameptr, "atmp", 4) == 0
+	    || (real_len > 4 && strncmp(nameptr + real_len - 4, ".bak", 4) == 0)
+	    || (real_len > 4 && strncmp(nameptr + real_len - 4, ".tmp", 4) == 0)) {
 		return true;
 	}
 
@@ -132,15 +135,16 @@ bool doc_tombstone_should_ignore_name(const char *nameptr, int len)
 // save a tombstone - but if there already is one and the name we're
 // given is an ignorable name, then we will not save a tombstone.
 //
-bool doc_tombstone_should_save(struct doc_tombstone *ut, struct vnode *vp,
-							   struct componentname *cnp)
+bool
+doc_tombstone_should_save(struct doc_tombstone *ut, struct vnode *vp,
+    struct componentname *cnp)
 {
 	if (cnp->cn_nameptr == NULL) {
 		return false;
 	}
 
 	if (ut->t_lastop_document_id && ut->t_lastop_item == vp
-		&& doc_tombstone_should_ignore_name(cnp->cn_nameptr, cnp->cn_namelen)) {
+	    && doc_tombstone_should_ignore_name(cnp->cn_nameptr, cnp->cn_namelen)) {
 		return false;
 	}
 
@@ -162,8 +166,8 @@ bool doc_tombstone_should_save(struct doc_tombstone *ut, struct vnode *vp,
 //
 void
 doc_tombstone_save(struct vnode *dvp, struct vnode *vp,
-				   struct componentname *cnp, uint64_t doc_id,
-				   ino64_t file_id)
+    struct componentname *cnp, uint64_t doc_id,
+    ino64_t file_id)
 {
 	struct  doc_tombstone *ut;
 	ut = doc_tombstone_get();
@@ -173,7 +177,7 @@ doc_tombstone_save(struct vnode *dvp, struct vnode *vp,
 	ut->t_lastop_fileid         = file_id;
 	ut->t_lastop_item           = vp;
 	ut->t_lastop_item_vid       = vp ? vnode_vid(vp) : 0;
-    ut->t_lastop_document_id    = doc_id;
+	ut->t_lastop_document_id    = doc_id;
 
 	strlcpy((char *)&ut->t_lastop_filename[0], cnp->cn_nameptr, sizeof(ut->t_lastop_filename));
 }

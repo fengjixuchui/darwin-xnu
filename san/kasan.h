@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000-2016 Apple Inc. All rights reserved.
+ * Copyright (c) 2000-2019 Apple Inc. All rights reserved.
  *
  * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
  *
@@ -103,19 +103,24 @@ void kasan_notify_address_nopoison(vm_offset_t address, vm_size_t size);
 void kasan_unpoison_stack(vm_offset_t stack, vm_size_t size);
 void kasan_unpoison_curstack(bool whole_stack);
 bool kasan_check_shadow(vm_address_t base, vm_size_t sz, uint8_t shadow);
+void kasan_unpoison_cxx_array_cookie(void *ptr);
 
 void kasan_fakestack_drop(thread_t thread); /* mark all fakestack entries for thread as unused */
 void kasan_fakestack_gc(thread_t thread);   /* free and poison all unused fakestack objects for thread */
 void kasan_fakestack_suspend(void);
 void kasan_fakestack_resume(void);
 
+/* Initialization and check for uninitialized memory */
+void kasan_leak_init(vm_address_t addr, vm_size_t sz);
+void kasan_check_uninitialized(vm_address_t base, vm_size_t sz);
+
 struct kasan_test;
 void __kasan_runtests(struct kasan_test *, int numtests);
 
 
 typedef int (*pmap_traverse_callback)(vm_map_offset_t start,
-                                      vm_map_offset_t end,
-                                      void *context);
+    vm_map_offset_t end,
+    void *context);
 int kasan_traverse_mappings(pmap_traverse_callback, void *context);
 
 #if XNU_KERNEL_PRIVATE
@@ -126,9 +131,13 @@ void kasan_notify_address_zero(vm_offset_t, vm_size_t);
 #elif __x86_64__
 extern void kasan_map_low_fixed_regions(void);
 extern unsigned shadow_stolen_idx;
+#endif
+#endif
+
+#if HIBERNATION
+// if we're building a kernel with hibernation support, hibernate_write_image depends on these symbols
 extern vm_offset_t shadow_pnext, shadow_ptop;
-#endif
-#endif
+#endif /* HIBERNATION */
 
 /*
  * Allocator hooks
@@ -172,11 +181,11 @@ extern const uintptr_t __asan_shadow_memory_dynamic_address;
 	ret func ## 2(__VA_ARGS__); \
 	ret func ## 4(__VA_ARGS__); \
 	ret func ## 8(__VA_ARGS__); \
-	ret func ## 16(__VA_ARGS__); \
+	ret func ## 16(__VA_ARGS__)
 
 __BEGIN_DECLS
 
-KASAN_DECLARE_FOREACH_WIDTH(void, __asan_report_load, uptr);
+    KASAN_DECLARE_FOREACH_WIDTH(void, __asan_report_load, uptr);
 KASAN_DECLARE_FOREACH_WIDTH(void, __asan_report_store, uptr);
 KASAN_DECLARE_FOREACH_WIDTH(void, __asan_store, uptr);
 KASAN_DECLARE_FOREACH_WIDTH(void, __asan_report_exp_load, uptr, int32_t);

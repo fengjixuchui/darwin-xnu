@@ -27,10 +27,9 @@
  */
 
 #ifndef _NET_ALTQ_ALTQ_QFQ_H_
-#define	_NET_ALTQ_ALTQ_QFQ_H_
+#define _NET_ALTQ_ALTQ_QFQ_H_
 
 #include <net/pfvar.h>
 #include <net/altq/altq.h>
-#include <net/pktsched/pktsched_qfq.h>
 
 #endif /* _NET_ALTQ_ALTQ_QFQ_H_ */

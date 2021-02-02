@@ -1,11 +1,12 @@
-/*
- *  cchmac.h
- *  corecrypto
+/* Copyright (c) (2010,2011,2012,2014,2015,2016,2017,2018,2019) Apple Inc. All rights reserved.
  *
- *  Created on 12/07/2010
- *
- *  Copyright (c) 2010,2011,2012,2014,2015 Apple Inc. All rights reserved.
- *
+ * corecrypto is licensed under Apple Inc.’s Internal Use License Agreement (which
+ * is contained in the License.txt file distributed with corecrypto) and only to 
+ * people who accept that license. IMPORTANT:  Any license rights granted to you by 
+ * Apple Inc. (if any) are limited to internal use within your organization only on 
+ * devices and computers you own or control, for the sole purpose of verifying the 
+ * security characteristics and correct functioning of the Apple Software.  You may 
+ * not, directly or indirectly, redistribute the Apple Software or any portions thereof.
  */
 
 #ifndef _CORECRYPTO_CCHMAC_H_
@@ -16,12 +17,12 @@
 
 /* An hmac_ctx_t is normally allocated as an array of these. */
 struct cchmac_ctx {
-    uint8_t b[8];
+    uint8_t b[1];
 } CC_ALIGNED(8);
 
 typedef struct cchmac_ctx* cchmac_ctx_t;
 
-#define cchmac_ctx_size(STATE_SIZE, BLOCK_SIZE)  (ccdigest_ctx_size(STATE_SIZE, BLOCK_SIZE) + (STATE_SIZE))
+#define cchmac_ctx_size(STATE_SIZE, BLOCK_SIZE) (cc_pad_align(ccdigest_ctx_size(STATE_SIZE, BLOCK_SIZE)) + (STATE_SIZE))
 #define cchmac_di_size(_di_)  (cchmac_ctx_size((_di_)->state_size, (_di_)->block_size))
 
 #define cchmac_ctx_n(STATE_SIZE, BLOCK_SIZE)  ccn_nof_size(cchmac_ctx_size((STATE_SIZE), (BLOCK_SIZE)))
@@ -35,7 +36,7 @@ typedef struct cchmac_ctx* cchmac_ctx_t;
 #define cchmac_digest_ctx(_di_, HC)    ((ccdigest_ctx_t)(HC))
 
 /* Accesors for ostate fields, this is all cchmac_ctx_t adds to the ccdigest_ctx_t. */
-#define cchmac_ostate(_di_, HC)    ((struct ccdigest_state *)(((cchmac_ctx_t)(HC))->b + ccdigest_di_size(_di_)))
+#define cchmac_ostate(_di_, HC)    ((struct ccdigest_state *)(((cchmac_ctx_t)(HC))->b + cc_pad_align(ccdigest_di_size(_di_))))
 #define cchmac_ostate8(_di_, HC)   (ccdigest_u8(cchmac_ostate(_di_, HC)))
 #define cchmac_ostate32(_di_, HC)  (ccdigest_u32(cchmac_ostate(_di_, HC)))
 #define cchmac_ostate64(_di_, HC)  (ccdigest_u64(cchmac_ostate(_di_, HC)))
